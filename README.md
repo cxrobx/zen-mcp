@@ -69,15 +69,24 @@ The table is a user config file, absent by default, read from `$XDG_CONFIG_HOME/
 
 ```json
 {
-  "routes": {
+  "containers": {
     "Artist Advisory": ["artistadvisory.io"],
-    "CXVentures": ["cxventures.io"],
+    "CXVentures": { "domains": ["cxventures.io"], "aliases": ["acct_1ABC99"] },
     "Buildersbuddy": ["buildersbuddy.org", "localhost:3200"]
-  }
+  },
+  "consoles": ["search.google.com"]
 }
 ```
 
-Matching: a rule matches its host **and its subdomains** (`cxventures.io` covers `qes.cxventures.io`); `*.example.com` matches subdomains only; `localhost:3000` pins a port. The most specific matching rule wins — exact host over parent domain, port-pinned over port-agnostic.
+Each **container** declares its identifying strings: `domains` (a bare list is shorthand for domains-only) and optional `aliases` — opaque strings like a Stripe account id for consoles whose URLs carry no domain. Every domain is automatically a host rule too, so the simple case needs nothing else.
+
+A **console** is a shared multi-project host — one login page, N projects' dashboards — like Google Search Console, where only the URL's `resource_id` says which property you're looking at. A console URL routes to whichever container's domain or alias appears in the **percent-decoded path, query, or fragment** — never the hostname or userinfo, so a container owning `stripe.com` cannot silently swallow every URL on a `dashboard.stripe.com` console — matched on token boundaries (so `pocketbuddy.org` claims neither `notpocketbuddy.org` nor `pocketbuddy.org.evil.com`). A `*.example.com` domain contributes the token `.example.com`, excluding the apex exactly as its host rule does.
+
+Because the query is where consoles actually put the property, **the URL's own text decides the container** — appending `?x=someproject.org` steers routing. The claim catches accidents, not hostile URLs; pass `container` explicitly for a console URL you got from a page or an email. A console URL that mentions *no* configured string — the property picker, an unconfigured site — **fails loudly and opens nothing**, because falling back to the session default is precisely the wrong-cookie-jar accident the table exists to prevent. Two escape hatches: pass `container` explicitly (always wins), or add a plain `routes` rule for the console host to act as its deliberate default. **Only list a host under `consoles` if its URLs actually carry your domains or aliases** — Google Analytics, for instance, keys URLs by numeric property id, so listing it without matching aliases makes every GA URL error.
+
+The older `{ "routes": { "Container": ["host", ...] } }` shape still works, alone or alongside the sections above.
+
+Matching: a rule matches its host **and its subdomains** (`cxventures.io` covers `qes.cxventures.io`); `*.example.com` matches subdomains only; `localhost:3000` pins a port. The most specific matching rule wins — console rule (host + identifying string) over any host-only rule, exact host over parent domain, port-pinned over port-agnostic.
 
 Precedence, highest first: **explicit argument** (`new_page_in_container`, `open_url({ container })`) → **host rule** → **session default** (`--container` / `set_default_container`) → no container. A host rule outranking the session default is what makes a project's URL land in that project's jar from any `zen-*` entry. Every tab-opening call prints the decision and its source, so routing is never invisible:
 

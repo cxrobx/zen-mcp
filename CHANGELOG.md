@@ -4,6 +4,57 @@ All notable changes to this project will be documented here. Versions track the
 extension manifest and the AMO-signed XPI artifacts. Server, daemon, and shared
 package versions move together with the extension.
 
+## Unreleased — container routing for shared consoles (Google Search Console et al.)
+
+Host → container routing answered "which cookie jar owns this domain?", which is the wrong
+question for a **console**: one host serving every project's dashboard, where only a query
+param says which property you are looking at. `search.google.com` could map to exactly one
+container, so a Search Console URL for one project opened in another project's jar — or,
+with no rule at all, in whichever jar the calling `zen-*` entry happened to default to.
+That is the wrong-login failure the route table exists to prevent, and it looks like
+success.
+
+The config gains two sections, which compile into the same rule list as before:
+
+```json
+{
+  "containers": {
+    "Geek": ["pocketbuddy.org", "teacherhero.org"],
+    "CXVentures": { "domains": ["cxventures.io"], "aliases": ["acct_1ABC99"] }
+  },
+  "consoles": ["search.google.com"]
+}
+```
+
+A container declares its **identifying strings** — `domains` (a bare list is shorthand)
+plus optional `aliases`, opaque strings for consoles whose URLs carry an account id rather
+than a domain. A console routes to whichever container's string appears in the
+percent-decoded **path, query, or fragment** — never the hostname or userinfo — matched on
+token boundaries so `pocketbuddy.org` claims neither `notpocketbuddy.org` nor
+`pocketbuddy.org.evil.com`. Every domain is also a plain host rule, so the simple case
+needs no duplication, and several projects can share one container.
+
+Restricting the search to path+query+fragment is load-bearing, not tidiness: scanning the
+whole URL let a container owning `stripe.com` match every URL on a `dashboard.stripe.com`
+console *inside the console's own hostname*, which silently disabled the claim and pulled
+another account's page into the wrong jar. The flip side is inherent and worth knowing:
+consoles put the property in the query, so **the URL's text decides the container** — pass
+`container` explicitly for a console URL that came from a page or an email.
+
+Cost scales as N+M, not N×M: **a new console is one string; a new project is one entry.**
+
+**A console host is claimed.** A URL on it that mentions no configured string errors and
+opens nothing, rather than falling back to the session default — the fallback jar is
+exactly the accident being prevented. Two deliberate outs: pass `container` explicitly, or
+add a plain `routes` rule for the console host as its default (it sits below the console
+tier, so property URLs still route per-project). Corollary: **do not list a host under
+`consoles` unless its URLs actually carry your domains or aliases** — Google Analytics keys
+by numeric property id, so listing it without matching aliases makes every GA URL error.
+
+The older `{ "routes": { "Container": ["host"] } }` shape is unchanged and still works,
+alone or alongside the new sections. `container_routes` shows both views and reports a
+claim; `get_firefox_info` counts console hosts.
+
 ## Unreleased — renamed `zen-extension-mcp` → `zen-mcp` (breaking for existing installs)
 
 This project was named `zen-extension-mcp` to distinguish it from a Marionette/Selenium

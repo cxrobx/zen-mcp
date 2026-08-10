@@ -15,7 +15,7 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
-import { matchContainerRoute, reloadRouteTable } from "../server/dist/routes.js";
+import { matchContainerRoute, reloadRouteTable, unmatchedConsoleClaim } from "../server/dist/routes.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
@@ -35,6 +35,15 @@ const ROUTE_FILE = {
     Buildersbuddy: ["buildersbuddy.org"],
     "Ghost Container": ["ghost.example"],
   },
+};
+
+// Drives the live-tool-surface console tests: one shared host, two containers.
+const CONSOLE_ROUTE_FILE = {
+  containers: {
+    "Artist Advisory": ["artistadvisory.io"],
+    Buildersbuddy: ["buildersbuddy.org"],
+  },
+  consoles: ["search.google.com"],
 };
 
 function page({ tabId, index, url, title, container = null, active = false }) {
@@ -232,8 +241,11 @@ let daemon;
 let ext;
 let unscoped;
 let scoped;
+let consoleServer;
+let consoleRouteFile;
 let mcp;
 let mcpScoped;
+let mcpConsole;
 
 async function startServer(tokenPath, extraArgs, env) {
   const child = spawn(
@@ -302,12 +314,23 @@ before(async () => {
   const b = await startServer(tokenPath, ["--container", "Personal"], { ZEN_MCP_ROUTES: routeFile });
   scoped = b.child;
   mcpScoped = b.client;
+
+  // A third server on a consoles-shaped table, container-scoped so the claim has a session
+  // default available to (wrongly) fall back to - that is the failure being guarded.
+  consoleRouteFile = join(dir, "containers-consoles.json");
+  await writeFile(consoleRouteFile, JSON.stringify(CONSOLE_ROUTE_FILE, null, 2), "utf8");
+  const c = await startServer(tokenPath, ["--container", "Personal"], {
+    ZEN_MCP_ROUTES: consoleRouteFile,
+  });
+  consoleServer = c.child;
+  mcpConsole = c.client;
 });
 
 after(async () => {
   ext?.close();
   unscoped?.kill("SIGTERM");
   scoped?.kill("SIGTERM");
+  consoleServer?.kill("SIGTERM");
   daemon?.kill("SIGTERM");
   await sleep(200);
   if (dir) await rm(dir, { recursive: true, force: true });
@@ -391,6 +414,225 @@ test("a broken or absent route file reports itself instead of looking empty", as
   delete process.env.ZEN_MCP_CONTAINER_ROUTES;
   assert.equal(off.enabled, false);
   assert.equal(matchContainerRoute(off, "https://artistadvisory.io/"), null);
+});
+
+// --- containers + consoles: shared multi-project hosts -----------------------------------
+
+/** Write a table to a fresh file, point the loader at it, restore afterwards. */
+async function withTable(t, name, table) {
+  const previous = process.env.ZEN_MCP_ROUTES;
+  const file = join(dir, name);
+  await writeFile(file, JSON.stringify(table), "utf8");
+  process.env.ZEN_MCP_ROUTES = file;
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZEN_MCP_ROUTES;
+    else process.env.ZEN_MCP_ROUTES = previous;
+    reloadRouteTable();
+  });
+  return reloadRouteTable();
+}
+
+const CONSOLE_TABLE = {
+  containers: {
+    Geek: { domains: ["pocketbuddy.org", "teacherhero.org"] },
+    // Shorthand: a bare list means domains only.
+    "Artist Advisory": ["artistadvisory.io"],
+  },
+  consoles: ["search.google.com"],
+};
+
+test("a console URL routes by which container's domain it mentions", async (t) => {
+  const table = await withTable(t, "consoles.json", CONSOLE_TABLE);
+  assert.equal(table.error, null);
+
+  // GSC's two property forms: percent-encoded sc-domain and URL-prefix.
+  const scDomain =
+    "https://search.google.com/search-console/index?resource_id=sc-domain%3Apocketbuddy.org";
+  const urlPrefix =
+    "https://search.google.com/search-console?resource_id=https%3A%2F%2Fartistadvisory.io%2F";
+  assert.equal(matchContainerRoute(table, scDomain)?.container, "Geek");
+  assert.equal(matchContainerRoute(table, scDomain)?.token, "pocketbuddy.org");
+  assert.equal(matchContainerRoute(table, urlPrefix)?.container, "Artist Advisory");
+  // Raw (already-decoded) form and a second domain of the same container.
+  assert.equal(
+    matchContainerRoute(table, "https://search.google.com/x?resource_id=sc-domain:teacherhero.org")
+      ?.container,
+    "Geek",
+  );
+  // Multi-account path segments do not matter; only host + mention do.
+  assert.equal(
+    matchContainerRoute(table, "https://search.google.com/u/1/search-console?resource_id=sc-domain%3Apocketbuddy.org")
+      ?.container,
+    "Geek",
+  );
+});
+
+test("container domains are also plain host rules - no duplication in routes needed", async (t) => {
+  const table = await withTable(t, "consoles-hosts.json", CONSOLE_TABLE);
+  assert.equal(matchContainerRoute(table, "https://pocketbuddy.org/dashboard")?.container, "Geek");
+  assert.equal(matchContainerRoute(table, "https://www.artistadvisory.io/")?.container, "Artist Advisory");
+  assert.equal(matchContainerRoute(table, "https://example.com/"), null);
+});
+
+test("identifying strings match on token boundaries, not as bare substrings", async (t) => {
+  const table = await withTable(t, "consoles-boundary.json", CONSOLE_TABLE);
+  // The lookalike-domain trap, console edition.
+  assert.equal(
+    matchContainerRoute(table, "https://search.google.com/x?resource_id=sc-domain%3Anotpocketbuddy.org"),
+    null,
+  );
+  // A registered domain that continues after the token is a different domain.
+  assert.equal(
+    matchContainerRoute(table, "https://search.google.com/x?resource_id=sc-domain%3Apocketbuddy.org.evil.com"),
+    null,
+  );
+  // A leading dot is a subdomain of the same site and must match.
+  assert.equal(
+    matchContainerRoute(table, "https://search.google.com/x?resource_id=https%3A%2F%2Fwww.pocketbuddy.org%2F")
+      ?.container,
+    "Geek",
+  );
+});
+
+test("the identifying string is searched in path+query+fragment only, never the host", async (t) => {
+  // The bug this guards: a container owning a console's parent domain made every URL on
+  // that console match its own hostname, so the claim never fired and one client's account
+  // page opened in another's cookie jar.
+  const table = await withTable(t, "consoles-hostspace.json", {
+    containers: {
+      CXVentures: { domains: ["stripe.com", "cxventures.io"] },
+      QES: { aliases: ["acct_9z00"] },
+    },
+    consoles: ["dashboard.stripe.com"],
+  });
+  // An account page must reach its own container, not the one that happens to own the
+  // provider's domain - the token must not be found inside "dashboard.stripe.com".
+  const acct = matchContainerRoute(table, "https://dashboard.stripe.com/acct_9z00/payments");
+  assert.equal(acct?.container, "QES");
+  assert.equal(acct?.token, "acct_9z00");
+  // The generic page has no account in it, so only the plain host rule from "stripe.com"
+  // answers - a deliberate default, never a console-token match.
+  const generic = matchContainerRoute(table, "https://dashboard.stripe.com/settings/account");
+  assert.equal(generic?.container, "CXVentures");
+  assert.equal(generic?.token, undefined, "must be the host rule, not an identity match");
+});
+
+test("userinfo cannot forge an identifying string", async (t) => {
+  const table = await withTable(t, "consoles-userinfo.json", CONSOLE_TABLE);
+  assert.equal(
+    matchContainerRoute(table, "https://pocketbuddy.org@search.google.com/search-console/welcome"),
+    null,
+    "the token lives in the credentials segment, not in the page identity",
+  );
+  assert.ok(
+    unmatchedConsoleClaim(table, "https://pocketbuddy.org@search.google.com/search-console/welcome"),
+  );
+});
+
+test("a *. domain's console token means the same thing as its host rule", async (t) => {
+  const table = await withTable(t, "consoles-wildcard.json", {
+    containers: { "Artist Advisory": ["*.artistadvisory.io"] },
+    consoles: ["search.google.com"],
+  });
+  const gsc = (prop) => `https://search.google.com/x?resource_id=https%3A%2F%2F${prop}%2F`;
+  // Subdomains match in both mechanisms...
+  assert.equal(matchContainerRoute(table, "https://www.artistadvisory.io/")?.container, "Artist Advisory");
+  assert.equal(matchContainerRoute(table, gsc("www.artistadvisory.io"))?.container, "Artist Advisory");
+  // ...and the apex is excluded in both. Before the fix the token was the bare apex, so the
+  // console matched the very URL the host rule refuses.
+  assert.equal(matchContainerRoute(table, "https://artistadvisory.io/"), null);
+  assert.equal(matchContainerRoute(table, gsc("artistadvisory.io")), null);
+  // The lookalike trap still holds for a dot-prefixed token.
+  assert.equal(matchContainerRoute(table, gsc("evil.artistadvisory.io.evil.com")), null);
+});
+
+test("a console host with no mention is claimed: no match, loud claim, no fallback", async (t) => {
+  const table = await withTable(t, "consoles-claim.json", CONSOLE_TABLE);
+  const picker = "https://search.google.com/search-console/welcome";
+  assert.equal(matchContainerRoute(table, picker), null);
+  const claim = unmatchedConsoleClaim(table, picker);
+  assert.equal(claim?.console, "search.google.com");
+  assert.deepEqual(claim?.containers, ["Geek", "Artist Advisory"]);
+  // Ordinary unmatched hosts are not claimed - they still fall through quietly.
+  assert.equal(unmatchedConsoleClaim(table, "https://example.com/"), null);
+});
+
+test("a plain routes rule on a console host is the explicit default, disabling the claim", async (t) => {
+  const table = await withTable(t, "consoles-default.json", {
+    ...CONSOLE_TABLE,
+    routes: { Geek: ["search.google.com"] },
+  });
+  // The bare picker now lands somewhere deliberate instead of erroring...
+  const picker = "https://search.google.com/search-console/welcome";
+  assert.equal(matchContainerRoute(table, picker)?.container, "Geek");
+  assert.equal(unmatchedConsoleClaim(table, picker), null, "claim only applies when nothing matched");
+  // ...while property URLs still outrank it and route per-project.
+  assert.equal(
+    matchContainerRoute(table, "https://search.google.com/x?resource_id=sc-domain%3Aartistadvisory.io")
+      ?.container,
+    "Artist Advisory",
+  );
+});
+
+test("aliases route console URLs that carry account ids instead of domains", async (t) => {
+  const table = await withTable(t, "consoles-alias.json", {
+    containers: {
+      CXVentures: { domains: ["cxventures.io"], aliases: ["acct_1abc99"] },
+      Geek: ["pocketbuddy.org"],
+    },
+    consoles: ["dashboard.stripe.com"],
+  });
+  assert.equal(
+    matchContainerRoute(table, "https://dashboard.stripe.com/acct_1abc99/payments")?.container,
+    "CXVentures",
+  );
+  // Alias boundaries: a longer id sharing the prefix is a different account.
+  assert.equal(matchContainerRoute(table, "https://dashboard.stripe.com/acct_1abc99x/payments"), null);
+  // An alias is an identifying string, never a host rule of its own.
+  assert.equal(matchContainerRoute(table, "https://acct_1abc99/"), null);
+  assert.equal(unmatchedConsoleClaim(table, "https://acct_1abc99/"), null);
+});
+
+test("two containers mentioned at equal specificity: first wins and says so", async (t) => {
+  const table = await withTable(t, "consoles-ambiguous.json", {
+    containers: { Personal: ["aaaa.com"], Geek: ["bbbb.com"] },
+    consoles: ["console.example"],
+  });
+  const both = "https://console.example/compare?left=aaaa.com&right=bbbb.com";
+  const match = matchContainerRoute(table, both);
+  assert.equal(match?.container, "Personal");
+  assert.equal(match?.ambiguousWith, "Geek");
+});
+
+test("a URL that cannot be percent-decoded still matches on its raw text", async (t) => {
+  const table = await withTable(t, "consoles-decode.json", CONSOLE_TABLE);
+  // %E0%A4%A is a malformed escape: decodeURIComponent throws, the matcher falls back raw.
+  assert.equal(
+    matchContainerRoute(table, "https://search.google.com/x?bad=%E0%A4%A&resource_id=sc-domain:pocketbuddy.org")
+      ?.container,
+    "Geek",
+  );
+});
+
+test("containers/consoles misconfigurations report themselves instead of misrouting", async (t) => {
+  const shortAlias = await withTable(t, "consoles-bad-alias.json", {
+    containers: { Geek: { domains: ["pocketbuddy.org"], aliases: ["ab"] } },
+    consoles: ["search.google.com"],
+  });
+  assert.match(shortAlias.error, /shorter than/);
+  assert.equal(shortAlias.rules.length, 0);
+
+  const wildcardAlias = await withTable(t, "consoles-bad-wildcard.json", {
+    containers: { Geek: { domains: ["pocketbuddy.org"], aliases: ["acct_*"] } },
+    consoles: ["search.google.com"],
+  });
+  assert.match(wildcardAlias.error, /no wildcards/);
+
+  const orphanConsoles = await withTable(t, "consoles-orphan.json", {
+    routes: { Geek: ["pocketbuddy.org"] },
+    consoles: ["search.google.com"],
+  });
+  assert.match(orphanConsoles.error, /"containers" section/);
 });
 
 // --- routing through the live tool surface -----------------------------------------------
@@ -532,7 +774,7 @@ test("new_page follows the same table, and new_page_in_container overrides it ou
   });
   assert.equal(forced.isError, false, forced.text);
   assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-1");
-  assert.match(forced.text, /route "artistadvisory\.io" maps this host to "Artist Advisory"/);
+  assert.match(forced.text, /route "artistadvisory\.io" maps this URL to "Artist Advisory"/);
 });
 
 test("navigate_page says so when it is about to load a URL into the wrong container", async () => {
@@ -555,6 +797,90 @@ test("a route naming a container that does not exist fails loudly and opens noth
   assert.match(text, /Ghost Container/);
   assert.match(text, /does not exist/);
   assert.equal(ext.requestsFor("pages.new").length, news, "nothing may be opened");
+});
+
+// --- consoles through the live tool surface ----------------------------------------------
+// These run against mcpConsole (CONSOLE_ROUTE_FILE, --container Personal). The session
+// default exists precisely so a silent fallback would be possible - and must not happen.
+
+test("open_url routes a console URL by the property named in it", async () => {
+  ext.reset();
+  const aa = await mcpConsole.callTool("open_url", {
+    url: "https://search.google.com/search-console?resource_id=sc-domain%3Aartistadvisory.io",
+  });
+  assert.equal(aa.isError, false, aa.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-8");
+  assert.match(aa.text, /console "search\.google\.com" \+ "artistadvisory\.io"/);
+  // The advisory text must not be double-quoted into gibberish.
+  assert.doesNotMatch(aa.text, /route "console /);
+
+  // Same host, different property -> the other container, never the session default.
+  const bb = await mcpConsole.callTool("open_url", {
+    url: "https://search.google.com/search-console?resource_id=sc-domain%3Abuildersbuddy.org",
+  });
+  assert.equal(bb.isError, false, bb.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-7");
+});
+
+test("a claimed console URL that names nothing fails loudly and opens nothing", async () => {
+  ext.reset();
+  const news = ext.requestsFor("pages.new").length;
+  const { isError, text } = await mcpConsole.callTool("open_url", {
+    url: "https://search.google.com/search-console/welcome",
+  });
+
+  assert.equal(isError, true, "must not fall back to the session default container");
+  assert.match(text, /search\.google\.com/);
+  assert.match(text, /Artist Advisory, Buildersbuddy/, "says which containers were tried");
+  assert.match(text, /container explicitly/, "names the escape hatch");
+  assert.equal(ext.requestsFor("pages.new").length, news, "nothing may be opened");
+  assert.doesNotMatch(text, /Personal/, "the session default must not be reached at all");
+
+  // new_page shares decideContainer, so it must refuse identically.
+  const viaNew = await mcpConsole.callTool("new_page", {
+    url: "https://search.google.com/search-console/welcome",
+  });
+  assert.equal(viaNew.isError, true, viaNew.text);
+  assert.equal(ext.requestsFor("pages.new").length, news, "still nothing opened");
+});
+
+test("an explicit container argument bypasses the claim", async () => {
+  ext.reset();
+  const { isError, text } = await mcpConsole.callTool("open_url", {
+    url: "https://search.google.com/search-console/welcome",
+    container: "Artist Advisory",
+  });
+  assert.equal(isError, false, text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-8");
+  assert.match(text, /the container argument/);
+});
+
+test("new_page_in_container's disagreement note stays readable for a console rule", async () => {
+  ext.reset();
+  const { isError, text } = await mcpConsole.callTool("new_page_in_container", {
+    name: "Buildersbuddy",
+    url: "https://search.google.com/search-console?resource_id=sc-domain%3Aartistadvisory.io",
+  });
+  assert.equal(isError, false, text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-7");
+  assert.match(text, /note: console "search\.google\.com" \+ "artistadvisory\.io" maps this URL to "Artist Advisory"/);
+  assert.doesNotMatch(text, /route "console /, "a console pattern must not be quoted twice");
+});
+
+test("container_routes explains a claim instead of promising a fallback", async () => {
+  const claimed = await mcpConsole.callTool("container_routes", {
+    url: "https://search.google.com/search-console/welcome",
+  });
+  assert.equal(claimed.isError, false, claimed.text);
+  assert.match(claimed.text, /CLAIMED by console host "search\.google\.com"/);
+  assert.doesNotMatch(claimed.text, /falls back to/);
+
+  const routed = await mcpConsole.callTool("container_routes", {
+    url: "https://search.google.com/x?resource_id=sc-domain%3Abuildersbuddy.org",
+  });
+  assert.match(routed.text, /via console "search\.google\.com" \+ "buildersbuddy\.org"/);
+  assert.match(routed.text, /container exists: Buildersbuddy/);
+  assert.match(routed.text, /consoles \(shared hosts/, "the table view names the console section");
 });
 
 test("container_routes reports the table and resolves one URL", async () => {

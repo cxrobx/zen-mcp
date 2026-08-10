@@ -49,6 +49,8 @@ import {
   matchContainerRoute,
   parseUrlTarget,
   reloadRouteTable,
+  unmatchedConsoleClaim,
+  type RouteMatch,
   type RouteTable,
   routeSummaryLine,
 } from "./routes.js";
@@ -384,6 +386,16 @@ function effectivePageUrl(page: PageInfo): string {
   return pending.url;
 }
 
+/**
+ * How a matched rule is named in transcript text. A console rule's pattern already reads as
+ * a phrase and carries its own quotes (`console "search.google.com" + "pocketbuddy.org"`),
+ * so only a bare host pattern gets wrapped. Every site that mentions a rule must use this -
+ * these lines are the whole reason a wrong jar is diagnosable from the transcript.
+ */
+function ruleText(match: RouteMatch): string {
+  return match.token ? match.pattern : `route "${match.pattern}"`;
+}
+
 function sameHostAndPort(pageUrl: string, target: { host: string; port: string }): boolean {
   const parsed = parseUrlTarget(pageUrl);
   if (!parsed) return false;
@@ -478,16 +490,27 @@ export function registerTools(
     }
     const match = matchContainerRoute(routes, url);
     if (match) {
-      const container = await containerNamed(match.container, `route "${match.pattern}"`);
+      const container = await containerNamed(match.container, ruleText(match));
       const decision: ContainerDecision = {
         container,
-        reason: `route "${match.pattern}" in ${routes.path}`,
+        reason: `${ruleText(match)} in ${routes.path}`,
         routed: true,
       };
       if (match.ambiguousWith) {
         decision.warning = `note: another rule of equal specificity maps this host to "${match.ambiguousWith}"; the first match won. Make one rule more specific.`;
       }
       return decision;
+    }
+    const claim = unmatchedConsoleClaim(routes, url);
+    if (claim) {
+      // A claimed console host must not fall back to the session default: landing a
+      // shared dashboard in whatever jar this session happens to hold is the wrong-login
+      // failure the consoles section exists to prevent.
+      throw new ZenToolError(
+        "NOT_FOUND",
+        `console host "${claim.console}" (${routes.path}) claims this URL, but it mentions no configured container's domains or aliases (tried: ${claim.containers.join(", ")})`,
+        `Nothing was opened. Consoles route by which container's identifying string appears in the URL. Pass container explicitly to override, or add the missing domain/alias to a container in ${routes.path} and reload with container_routes.`,
+      );
     }
     const scoped = await resolveScopeOnce(daemon, scope);
     if (scoped) {
@@ -529,7 +552,7 @@ export function registerTools(
     {
       title: "Show container route table",
       description:
-        "Show which Firefox container owns which domains - the host rules open_url and new_page follow, loaded from the container route file. Pass url to see exactly how one URL resolves (rule, container, or fallback), and reload=true to re-read the file after editing it.",
+        "Show which Firefox container owns which domains - the rules open_url and new_page follow, loaded from the container route file. Containers declare identifying domains/aliases; console entries are shared multi-project hosts (e.g. search.google.com) routed by which container's string appears in the URL, failing loudly when none does. Pass url to see exactly how one URL resolves (rule, container, claim, or fallback), and reload=true to re-read the file after editing it.",
       inputSchema: {
         url: z.string().optional().describe("Resolve this URL against the table and report the decision."),
         reload: z.boolean().optional().describe("Re-read the route file from disk before answering."),
@@ -547,7 +570,9 @@ export function registerTools(
           const match = matchContainerRoute(routes, url);
           if (match) {
             lines.push(
-              `${url} -> "${match.container}" via rule "${match.pattern}" (${match.kind} host match)`,
+              match.token
+                ? `${url} -> "${match.container}" via ${match.pattern} (${match.kind} host match + identifying string)`
+                : `${url} -> "${match.container}" via rule "${match.pattern}" (${match.kind} host match)`,
             );
             if (match.ambiguousWith) {
               lines.push(
@@ -557,20 +582,27 @@ export function registerTools(
             // Report whether that container actually exists, since a typo here is invisible
             // until the moment a page would have been opened in the wrong jar.
             try {
-              const resolved = await containerNamed(match.container, `route "${match.pattern}"`);
+              const resolved = await containerNamed(match.container, ruleText(match));
               lines.push(`container exists: ${resolved.name} (${resolved.cookieStoreId})`);
             } catch (err) {
               lines.push(err instanceof ZenToolError ? err.toToolText() : String(err));
             }
           } else {
-            const sessionDefault = scope.current?.name ?? scope.requestedName ?? null;
-            lines.push(
-              `${url} -> no matching rule; falls back to ${
-                sessionDefault
-                  ? `the session default container "${sessionDefault}"`
-                  : "no container (Firefox default cookie jar)"
-              }`,
-            );
+            const claim = unmatchedConsoleClaim(routes, url);
+            if (claim) {
+              lines.push(
+                `${url} -> CLAIMED by console host "${claim.console}" but mentions no configured container's domains/aliases (tried: ${claim.containers.join(", ")}). open_url would fail loudly. Pass container explicitly, or add the identifying string to a container.`,
+              );
+            } else {
+              const sessionDefault = scope.current?.name ?? scope.requestedName ?? null;
+              lines.push(
+                `${url} -> no matching rule; falls back to ${
+                  sessionDefault
+                    ? `the session default container "${sessionDefault}"`
+                    : "no container (Firefox default cookie jar)"
+                }`,
+              );
+            }
           }
         }
         return ok(lines.join("\n"));
@@ -631,7 +663,7 @@ export function registerTools(
     {
       title: "New page",
       description:
-        "Open a new tab at URL, always a new one. Prefer open_url, which reuses the tab already on that host instead of stacking duplicates. Container is chosen the same way in both: a matching host rule from the container route table wins, otherwise the session default (--container or set_default_container). Opens in the background by default (does not steal focus); pass active=true to foreground it.",
+        "Open a new tab at URL, always a new one. Prefer open_url, which reuses the tab already on that host instead of stacking duplicates. Container is chosen the same way in both: a matching rule from the container route table wins, otherwise the session default (--container or set_default_container). Errors without opening anything if the URL is on a configured console host (a shared multi-project host) but names no container - see container_routes. Opens in the background by default (does not steal focus); pass active=true to foreground it.",
       inputSchema: {
         url: z.string().describe("Target URL"),
         active: z
@@ -664,7 +696,7 @@ export function registerTools(
     {
       title: "Open URL in the owning container",
       description:
-        "Preferred way to reach a URL. Routes it to the container that owns the domain (host rules in the container route table, see container_routes), then goes to the tab already open on that host in that container instead of stacking up duplicates - focusing it if it is already at that URL, otherwise navigating it. Opens a new tab in the right container only when no such tab is visible. Host rules outrank the session default container, so a project's URL lands in that project's cookie jar from any zen-* server. Reuse only sees the ACTIVE Zen workspace; a matching tab in another workspace is invisible and a new tab is opened. Stays in the background unless active=true.",
+        "Preferred way to reach a URL. Routes it to the container that owns the domain (rules in the container route table, see container_routes), then goes to the tab already open on that host in that container instead of stacking up duplicates - focusing it if it is already at that URL, otherwise navigating it. Opens a new tab in the right container only when no such tab is visible. Route rules outrank the session default container, so a project's URL lands in that project's cookie jar from any zen-* server. On a configured console host (a shared multi-project host like a search console), routing needs the URL to name a container's domain or alias; when it names none this errors and opens nothing - pass container explicitly to override. Reuse only sees the ACTIVE Zen workspace; a matching tab in another workspace is invisible and a new tab is opened. Stays in the background unless active=true.",
       inputSchema: {
         url: z.string().describe("Target URL"),
         container: z
@@ -778,7 +810,7 @@ export function registerTools(
         const match = matchContainerRoute(routes, url);
         if (match && match.container !== container.name) {
           lines.push(
-            `note: route "${match.pattern}" maps this host to "${match.container}"; opened in "${container.name}" as requested.`,
+            `note: ${ruleText(match)} maps this URL to "${match.container}"; opened in "${container.name}" as requested.`,
           );
         }
         return withNavMeta(ok(lines.join("\n")), { url: r.url, navigated: true });
@@ -808,7 +840,7 @@ export function registerTools(
         const match = matchContainerRoute(routes, url);
         if (match && match.container !== page.containerName) {
           lines.push(
-            `note: route "${match.pattern}" maps this host to container "${match.container}", but this tab is in ${page.containerName ? `"${page.containerName}"` : "no container"} and cannot be moved. Use open_url to land in the right one.`,
+            `note: ${ruleText(match)} maps this URL to container "${match.container}", but this tab is in ${page.containerName ? `"${page.containerName}"` : "no container"} and cannot be moved. Use open_url to land in the right one.`,
           );
         }
         return withNavMeta(ok(lines.join("\n")), { url, navigated: true });
