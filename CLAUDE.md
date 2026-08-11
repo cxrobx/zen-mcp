@@ -122,6 +122,24 @@ After any extension change, run the relevant probe(s) — `npm run build` doesn'
 - **Probe scripts that drive live Zen must set `ZEN_MCP_NAV_MEMORY=0`.** Without it, probe traffic (`example.com`, localhost fixtures) is captured and distilled into the real store — that's where the 16 junk notes came from. `probe-navmem.mjs` is the deliberate exception: it tests capture, against a scratch daemon.
 - **In-place extension upgrades occasionally no-op silently.** Always confirm the new version in `about:addons` after install. If stuck, remove the existing extension (`⋯ → Remove`) and re-run `open -a "/Applications/Zen.app" <xpi>`; that's reliable for a clean install. The localhost-XPI-server flow (step 7 of the iteration loop) is a deeper fallback if even `open -a` produces nothing.
 
+## Container routing: how to extend the table
+
+The schema won't rot — **placement will**. Once domains land in sections for convenience ("it's one word shorter"), the file stops recording *why* anything is where it is and every later edit is a guess. Keep one meaning per section:
+
+| Section | Means | Membership test |
+|---|---|---|
+| `containers` | **Identity** — strings that *name* the project | "Would I want a Search Console URL containing this string routed here?" If the question reads as nonsense, it doesn't belong. |
+| `consoles` | **Shared hosts where the wrong jar is an incident** | Every URL you'd open there carries some container's identity string. |
+| `routes` | **Residence** — lives in a jar, doesn't name a project | `claude.ai` → Geek. Also the deliberate soft default on a console host (matches below the console tier). |
+
+The first row is load-bearing: every `containers` domain is cross-multiplied into console tokens (`compileTable`, `routes.ts`), which is the whole per-project console mechanism. Let that section drift into "domains I associate with Geek" and you grow rules that steer console URLs on accidental substring hits, plus `ambiguousWith` warnings that scale with the mess. Verified: `claude.ai` under `routes` resolves to Geek, and a `search.google.com` URL naming `claude.ai` still throws the claim error — the separation is real, not stylistic.
+
+**Growth is demand-driven.** Add a host on *first misroute*, one line, then prove it with `container_routes({url: "<the real url>", reload: true})` — never batch-add anticipatorily. Unrouted hosts fail *soft* (session default) and every tab-open prints which rule decided, so a misroute is visible in the transcript and costs one line. Speculative rules are the debt: unexercised, and wrong by the time they matter. Same policy but stricter for `consoles`, since one entry converts soft fallbacks into hard errors across an entire host.
+
+**Never add a catch-all** (`"default": "Personal"`, `"*"`). Route beats session scope, so a match-everything rule would override `--container` on every entry and `zen-geek` would stop meaning anything. The per-entry default *is* the catch-all layer, correctly placed below the table.
+
+Scale isn't a concern: rules compile as `domains + routes + (consoles × (domains + aliases))` against `MAX_RULES = 500` — a hand-maintained table stays in the low tens — and matching is a linear scan run once per tab-open. A `_readme` key at the top of the config is ignored by the loader (only the three known keys are read) and holds the short version of this doctrine.
+
 ## Where things live
 
 | What | Where |
