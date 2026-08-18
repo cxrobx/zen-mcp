@@ -20,6 +20,7 @@
     "test:nav-memory": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/nav-memory.test.mjs",
     "test:tab-target": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/tab-target.test.mjs",
     "test:container-routes": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/container-routes.test.mjs",
+    "test:fill-secret": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/fill-secret.test.mjs",
     "daemon": "node daemon/dist/index.js",
     "server": "node server/dist/index.js",
     "extension:run": "npm run run -w extension",

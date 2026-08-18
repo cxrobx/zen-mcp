@@ -43,6 +43,7 @@ import { ZenToolError } from "./errors.js";
 import { continueCursor, withResponseBudget } from "./response-budget.js";
 import { parseLocator } from "./locator.js";
 import { NavContext, withNavMeta } from "./nav-memory.js";
+import { requireSecretBinding, resolveSecret, scrubSecretValue } from "./secrets.js";
 import {
   describeRouteTable,
   loadRouteTable,
@@ -1681,6 +1682,58 @@ export function registerTools(
           ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
         });
         return okWithFeedback(`filled ${selector}`, r);
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "fill_secret",
+    {
+      title: "Fill a field from the macOS Keychain",
+      description:
+        "Set a field's value from the login Keychain (service cx-secret) by secret NAME, so the value never enters the conversation. The secret must be bound to the target page's exact host in ~/.config/zen-mcp/secrets.json ({\"secrets\": {\"NAME\": [\"host\"]}}); an unbound host is an error, never a fallback. The result reports the name and length only.",
+      inputSchema: {
+        ...targetShape(),
+        selector: z.string(),
+        secret: z
+          .string()
+          .regex(/^[A-Z][A-Z0-9_]*$/)
+          .describe("Secret NAME in the cx-secret Keychain service (e.g. MILLIONVERIFIER_PASSWORD) — never the value itself."),
+        timeoutMs: z.number().int().positive().optional(),
+      },
+    },
+    async ({ pageIdx, tabId, expectTabSet, selector, secret, timeoutMs }) => {
+      try {
+        const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
+        const pageUrl = effectivePageUrl(page);
+        const target = parseUrlTarget(pageUrl);
+        if (!target) {
+          throw new ZenToolError(
+            "BAD_INPUT",
+            `target tab has no usable page URL ("${pageUrl}") to check the secret binding against`,
+            "Nothing was filled. Wait for the page to commit its navigation, then retry.",
+          );
+        }
+        requireSecretBinding(secret, target.host);
+        const value = await resolveSecret(secret);
+        const locator = toLocator(selector);
+        try {
+          const r = await daemon.call<InteractionResult>(Methods.DomFillByLocator, {
+            tabId: page.tabId,
+            locator,
+            value,
+            ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+          });
+          return scrubSecretValue(
+            okWithFeedback(`filled ${selector} with secret ${secret} (${value.length} chars)`, r),
+            value,
+          );
+        } catch (err) {
+          // From here the value exists; every outgoing string is scrubbed, error paths included.
+          return scrubSecretValue(fail(err), value);
+        }
       } catch (err) {
         return fail(err);
       }

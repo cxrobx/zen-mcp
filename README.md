@@ -42,7 +42,7 @@ Per-tab tools take `tabId` (durable) or `pageIdx` (positional) — see [Addressi
 | **Containers** | `list_containers`, `container_routes`, `set_default_container`, `new_page_in_container` |
 | **Pages** | `open_url`, `list_pages`, `new_page`, `navigate_page`, `select_page`, `close_page`, `navigate_history`, `screenshot_page` |
 | **DOM read** | `take_snapshot`, `clear_snapshot`, `resolve_uid_to_selector`, `evaluate_script`, `get_page_text`, `read_page`, `find_by_text`, `wait_for` |
-| **DOM actions** | `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `fill_form_by_uid`, `drag_by_uid_to_uid`, `click`, `hover`, `fill`, `type`, `drag`, `select_option`, `press_key`, `scroll` |
+| **DOM actions** | `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `fill_form_by_uid`, `drag_by_uid_to_uid`, `click`, `hover`, `fill`, `fill_secret`, `type`, `drag`, `select_option`, `press_key`, `scroll` |
 | **Cookies/storage** | `get_cookies`, `set_cookies`, `clear_cookies`, `get_storage`, `set_storage`, `clear_storage` |
 | **Diagnostics** | `get_firefox_info` |
 | **Navigation memory** | `get_domain_playbook`, `nav_memory_stats`, `nav_memory_forget` |
@@ -87,6 +87,22 @@ Because the query is where consoles actually put the property, **the URL's own t
 The older `{ "routes": { "Container": ["host", ...] } }` shape still works, alone or alongside the sections above.
 
 Matching: a rule matches its host **and its subdomains** (`cxventures.io` covers `qes.cxventures.io`); `*.example.com` matches subdomains only; `localhost:3000` pins a port. The most specific matching rule wins — console rule (host + identifying string) over any host-only rule, exact host over parent domain, port-pinned over port-agnostic.
+
+### fill_secret: Keychain secrets without transcript exposure
+
+`fill`'s `value` parameter is the only door into a form field, and everything in a tool call is conversation transcript — so filling a credential meant either exposing it or giving up on the browser. `fill_secret` closes that gap: it takes a secret **NAME**, resolves the value from the macOS login Keychain (service `cx-secret`, the secrets-kit store) **inside the server process**, and hands it straight to the fill RPC. The value transits only process memory and the token-authenticated localhost WebSocket — never the transcript. The result reports the name and character count; every outgoing string (error paths included) is scrubbed of the value.
+
+A secret may only be filled into a host it is **explicitly bound to**, in `$XDG_CONFIG_HOME/zen-mcp/secrets.json` (fallback `~/.config/...`, override `ZEN_MCP_SECRETS`):
+
+```json
+{
+  "secrets": {
+    "MILLIONVERIFIER_PASSWORD": ["app.millionverifier.com"]
+  }
+}
+```
+
+Host match is **exact** (binding `example.com` does not cover `login.example.com` — list both if both are real fill targets), and an unbound host is an **error, never a fallback**: the binding is what stops a misread page or a prompt-injected session from steering a credential into a lookalike form, the same way a password manager binds credentials to origins. A malformed config is a reported error, never treated as empty. First use per server binary may pop a macOS Keychain access dialog — approve it once; a `TIMEOUT` error from this tool usually means that dialog is waiting on screen.
 
 Precedence, highest first: **explicit argument** (`new_page_in_container`, `open_url({ container })`) → **host rule** → **session default** (`--container` / `set_default_container`) → no container. A host rule outranking the session default is what makes a project's URL land in that project's jar from any `zen-*` entry. Every tab-opening call prints the decision and its source, so routing is never invisible:
 

@@ -197,7 +197,7 @@ export class NavContext {
     if (meta?.navigated || tool === "navigate_page" || tool.startsWith("new_page")) event.navigated = true;
     if (response.isError) event.errorCode = errorCode(response);
 
-    if (["click", "hover", "fill", "type", "select_option", "scroll"].includes(tool) && typeof args.selector === "string") {
+    if (["click", "hover", "fill", "fill_secret", "type", "select_option", "scroll"].includes(tool) && typeof args.selector === "string") {
       const locator = sanitizeLocator(args.selector);
       if (locator) event.locator = locator;
     } else if (tool === "drag") {

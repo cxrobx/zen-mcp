@@ -49,7 +49,8 @@ const ALLOWED_TOOLS = new Set([
   "take_snapshot", "clear_snapshot", "click_by_uid", "hover_by_uid", "fill_by_uid",
   "fill_form_by_uid", "drag_by_uid_to_uid", "resolve_uid_to_selector", "evaluate_script",
   "screenshot_page", "get_page_text", "read_page", "find_by_text", "wait_for", "click",
-  "hover", "fill", "type", "drag", "select_option", "press_key", "scroll", "get_cookies",
+  // fill_secret events are structural like fill's: tool, host, path, ok, locator — never a value.
+  "hover", "fill", "fill_secret", "type", "drag", "select_option", "press_key", "scroll", "get_cookies",
   "set_cookies", "clear_cookies", "get_storage", "set_storage", "clear_storage",
 ]);
 
