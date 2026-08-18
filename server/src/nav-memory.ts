@@ -6,6 +6,7 @@ import {
   type PageInfo,
 } from "@zen-mcp/shared";
 import {
+  isDevHost,
   normalizeHost,
   normalizeUrl,
   redactText,
@@ -112,7 +113,11 @@ export class NavContext {
     }
     for (const candidate of candidates) {
       const normalized = normalizeUrl(candidate);
-      if (normalized) return { host: normalized.host, path: normalized.path };
+      if (!normalized) continue;
+      // The first normalizable candidate IS the tool's location; when it is a
+      // dev host, that means no capture and no injection — not "try the next
+      // candidate", which would attribute the event to the wrong page.
+      return isDevHost(normalized.host) ? null : { host: normalized.host, path: normalized.path };
     }
     return null;
   }

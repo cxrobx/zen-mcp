@@ -62,6 +62,19 @@ function isIp(host: string): boolean {
   return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(":");
 }
 
+// Dev servers are excluded from navigation memory entirely: the host key has no
+// port, so every localhost project would share one note bucket and notes learned
+// on one project's dev server would inject into another's — and dev UIs change
+// too fast for anything learned about them to stay true.
+export function isDevHost(host: string): boolean {
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.startsWith("127.")
+  );
+}
+
 export function registrableDomain(host: string): string | null {
   if (host === "localhost" || isIp(host)) return null;
   return getDomain(host, { allowPrivateDomains: true }) ?? null;

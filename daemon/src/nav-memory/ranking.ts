@@ -1,5 +1,20 @@
-import type { NavNote } from "@zen-mcp/shared";
+import type { NavNote, NavNoteKind } from "@zen-mcp/shared";
 import { matchesPathGlob } from "@zen-mcp/shared/nav-redact";
+
+// Actionable kinds get the scarce injection slots. workflow/timing notes mostly
+// restate how past sessions behaved, and because every later session looks the
+// same they are the easiest notes to reinforce — an unweighted rank lets them
+// crowd out the tool-tips and anti-patterns that actually change behavior.
+const KIND_WEIGHT: Record<NavNoteKind, number> = {
+  "tool-tip": 1.25,
+  "anti-pattern": 1.25,
+  "iframe-quirk": 1.25,
+  selector: 1.15,
+  "auth-flow": 1.15,
+  "url-pattern": 1,
+  workflow: 0.7,
+  timing: 0.7,
+};
 
 export interface RankContext {
   host: string;
@@ -16,7 +31,7 @@ export function scoreNote(note: NavNote, ctx: RankContext): number {
   const reinforcement = 1 + Math.min(2, Math.log2(Math.max(1, note.reinforced)));
   const hostFactor = note.host === ctx.host ? 1 : 0.35;
   const pathFactor = note.pathGlob && ctx.path && matchesPathGlob(ctx.path, note.pathGlob) ? 1.25 : 1;
-  return note.confidence * recency * reinforcement * hostFactor * pathFactor;
+  return note.confidence * recency * reinforcement * hostFactor * pathFactor * (KIND_WEIGHT[note.kind] ?? 1);
 }
 
 export function rankNotes(notes: NavNote[], ctx: RankContext, limit: number): NavNote[] {

@@ -95,6 +95,32 @@ test("path scoping and ranking exclude nonmatching scoped notes", () => {
   assert.deepEqual(rankNotes(notes, { host: "console.cloud.google.com", registrableDomain: "google.com", path: "/billing" }, 10).map((n) => n.id), ["exact", "related"]);
 });
 
+test("actionable kinds outrank workflow/timing notes at equal standing", () => {
+  const now = new Date().toISOString();
+  const base = {
+    host: "app.example",
+    registrableDomain: "app.example",
+    pathGlob: null,
+    detail: "detail",
+    example: null,
+    tools: [],
+    success: true,
+    confidence: 0.6,
+    reinforced: 1,
+    createdAt: now,
+    lastSeenAt: now,
+    source: null,
+    embedding: null,
+  };
+  const notes = [
+    { ...base, id: "cadence", kind: "timing", summary: "Calls happen at intervals." },
+    { ...base, id: "toolTip", kind: "tool-tip", summary: "get_page_text fails here; evaluate_script works." },
+    { ...base, id: "flow", kind: "workflow", summary: "Activity occurs on the root path." },
+  ];
+  const ranked = rankNotes(notes, { host: "app.example", registrableDomain: "app.example" }, 10).map((n) => n.id);
+  assert.equal(ranked[0], "toolTip");
+});
+
 test("store permissions, ETL idempotency, and durable seed suppression", async () => {
   const dir = await mkdtemp(join(tmpdir(), "nav-store-test-"));
   const distiller = {
@@ -165,6 +191,46 @@ test("server injection is once per host and capture excludes entered values", as
   const records = calls.filter((call) => call.method === "navMemory.recordEvents");
   assert.equal(JSON.stringify(records).includes("secret@example.com"), false);
   assert.equal(JSON.stringify(records).includes("another@example.com"), false);
+});
+
+test("dev hosts are never captured, queried, or injected by the server", async () => {
+  const calls = [];
+  const daemon = {
+    async call(method, params) {
+      calls.push({ method, params });
+      return { accepted: 0, dropped: 0 };
+    },
+  };
+  const nav = new NavContext(daemon, true);
+  nav.observePages([{ tabId: 1, windowId: 1, index: 0, url: "http://localhost:3000/landing", title: "", active: true, cookieStoreId: "x", containerName: null }]);
+  const wrapped = nav.wrap("get_page_text", async () => ({ content: [{ type: "text", text: "body" }] }));
+  const response = await wrapped({ tabId: 1 });
+  assert.equal(response.content[0].text, "body");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, []);
+});
+
+test("daemon drops dev-host events even from servers that predate the check", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nav-devhost-test-"));
+  const distiller = { async distill() { return []; } };
+  try {
+    const store = new JsonNavStore(dir);
+    const service = new NavMemoryService(store, distiller, offlineEmbedder());
+    await service.init();
+    const result = await service.handleRequest({ connId: "c1", containerScope: null }, "navMemory.recordEvents", {
+      events: [
+        { ts: Date.now(), tool: "fill", host: "localhost", path: "/x", ok: true },
+        { ts: Date.now(), tool: "fill", host: "127.0.0.1", path: "/x", ok: true },
+        { ts: Date.now(), tool: "fill", host: "app.local", path: "/x", ok: true },
+        { ts: Date.now(), tool: "fill", host: "example.com", path: "/x", ok: true },
+      ],
+    });
+    assert.equal(result.accepted, 1);
+    assert.equal(result.dropped, 3);
+    await service.stop();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("query failures remain retryable and the kill switch is inert", async () => {

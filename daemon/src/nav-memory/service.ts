@@ -17,6 +17,7 @@ import {
 } from "@zen-mcp/shared";
 import {
   containsPromptLikeText,
+  isDevHost,
   normalizeHost,
   normalizeSummary,
   normalizeUrl,
@@ -491,7 +492,9 @@ function validateEvent(raw: unknown, now: number): NavEventRecord | null {
   let path: string | undefined;
   if (typeof p.host === "string") {
     const normalized = normalizeUrl(`https://${p.host}${typeof p.path === "string" ? p.path : "/"}`);
-    if (normalized) ({ host, path } = normalized);
+    // Dev-host events are also refused server-side in deriveLocation; this
+    // guard covers older server processes that predate that check.
+    if (normalized && !isDevHost(normalized.host)) ({ host, path } = normalized);
   }
   const ts = typeof p.ts === "number" && Math.abs(p.ts - now) <= 86_400_000 ? p.ts : now;
   const event: NavEventRecord = { ts, tool: p.tool, ok: p.ok };
