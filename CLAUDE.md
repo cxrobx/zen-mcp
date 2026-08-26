@@ -92,6 +92,7 @@ For installation specifically: `open -a "/Applications/Zen.app" <xpi>` triggers 
 | `scripts/fill-secret.test.mjs` | `node --test` suite for `fill_secret`: value reaches the fill RPC but never the transcript (hostile echo scrubbed), unbound host / unknown name / Keychain miss all error without attempting a fill, malformed config fails loud. Stub extension + fake `security` binary, no browser, no real Keychain. `npm run test:fill-secret`. |
 | `scripts/probe-routes.mjs` | Live routing probe. Phase A resolves the REAL table read-only; phase B drives `open_url` against a throwaway `example.com` table and asserts every pre-existing tab is untouched. |
 | `scripts/check-space-sync.mjs` | Read-only drift report: Zen spaces ↔ containers ↔ the route table. `npm run check:spaces`. Reads the live Zen profile (`zen-sessions.jsonlz4` + `containers.json` + prefs; never writes). No browser or daemon needed. |
+| `scripts/gen-space-routes.mjs` | Generates Zen Space Routing rules from the route table so a URL's space and container are decided by one list. `npm run gen:routes` is a dry run; `-- --write` installs and needs a Zen restart. Shared profile readers + the mozlz4 codec live in `scripts/lib/zen-profile.mjs`. |
 
 For nav-memory work run `npm run test:nav-memory`, `node scripts/probe-navmem.mjs`, and the unchanged `node scripts/smoke.mjs`. The default ETL probe uses a fake tool-free Claude executable and fake Ollama endpoint; a live subscription is not a test prerequisite.
 

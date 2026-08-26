@@ -22,25 +22,20 @@
  * containers.json has a Space Routing rule, and that rule points at a space whose
  * container is the one containers.json routes the host to.
  *
- * SPACES LIVE IN zen-sessions.jsonlz4, NOT IN places.sqlite. The zen_workspaces
- * table is a one-time migration source that ZenSessionManager reads once on the
- * first launch of Zen 1.21+ and then never writes again — it is a fossil frozen
- * at migration day, and reading it reports spaces that were deleted months ago
- * and misses every space created since. Don't "fix" a missing space by going
- * back to sqlite.
- *
- * Read-only. Never writes to the Zen profile.
+ * Read-only. Never writes to the Zen profile. Where things live on disk, and why
+ * places.sqlite is not one of them, is documented in scripts/lib/zen-profile.mjs.
  */
 
-import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-const HOME = homedir();
-const ZEN_ROOT = join(HOME, "Library", "Application Support", "zen");
-const ROUTE_TABLE = join(HOME, ".config", "zen-mcp", "containers.json");
-const PREF = "zen.workspaces.force-container-workspace";
+import {
+  resolveProfile,
+  readSpaces,
+  readContainers,
+  readPref,
+  readRoutingRules,
+  readRouteTable,
+  hostContainerMap,
+  FORCE_PREF as PREF,
+} from "./lib/zen-profile.mjs";
 
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const red = (s) => (color ? `\x1b[31m${s}\x1b[0m` : s);
@@ -49,138 +44,9 @@ const yellow = (s) => (color ? `\x1b[33m${s}\x1b[0m` : s);
 const dim = (s) => (color ? `\x1b[2m${s}\x1b[0m` : s);
 const bold = (s) => (color ? `\x1b[1m${s}\x1b[0m` : s);
 
-/** Resolve the profile Zen actually runs. profiles.ini's `Default=1` can name a
- *  legacy profile, so prefer the Install sections and break ties by the
- *  freshest prefs.js. */
-function resolveProfile(override) {
-  if (override) return override;
-  const ini = readFileSync(join(ZEN_ROOT, "profiles.ini"), "utf8");
-  const candidates = [];
-  for (const m of ini.matchAll(/^\[Install[^\]]*\][^[]*/gm)) {
-    const d = m[0].match(/^Default=(.+)$/m);
-    if (d) candidates.push(join(ZEN_ROOT, d[1].trim()));
-  }
-  if (!candidates.length) {
-    for (const m of ini.matchAll(/^Path=(.+)$/gm)) candidates.push(join(ZEN_ROOT, m[1].trim()));
-  }
-  const live = candidates.filter((p) => existsSync(join(p, "prefs.js")));
-  if (!live.length) throw new Error("no Zen profile with a prefs.js found");
-  return live.map((p) => ({ p, mtime: statMtime(join(p, "prefs.js")) })).sort((a, b) => b.mtime - a.mtime)[0].p;
-}
-
-function statMtime(p) {
-  try {
-    return execFileSync("/usr/bin/stat", ["-f", "%m", p], { encoding: "utf8" }).trim() | 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** mozlz4 = "mozLz40\0" + uint32LE decompressed size + one LZ4 block. */
-function mozlz4(buf) {
-  if (buf.subarray(0, 8).toString("latin1") !== "mozLz40\0") throw new Error("not a mozlz4 file");
-  const size = buf.readUInt32LE(8);
-  const src = buf.subarray(12);
-  const dst = Buffer.alloc(size);
-  let i = 0;
-  let o = 0;
-  while (i < src.length) {
-    const token = src[i++];
-    let litLen = token >> 4;
-    if (litLen === 15) {
-      let b;
-      do {
-        b = src[i++];
-        litLen += b;
-      } while (b === 255);
-    }
-    src.copy(dst, o, i, i + litLen);
-    i += litLen;
-    o += litLen;
-    if (i >= src.length) break;
-    const offset = src[i] | (src[i + 1] << 8);
-    i += 2;
-    let matchLen = token & 0xf;
-    if (matchLen === 15) {
-      let b;
-      do {
-        b = src[i++];
-        matchLen += b;
-      } while (b === 255);
-    }
-    matchLen += 4;
-    for (let k = 0; k < matchLen; k++) dst[o + k] = dst[o - offset + k];
-    o += matchLen;
-  }
-  return JSON.parse(dst.subarray(0, o).toString("utf8"));
-}
-
-/** The live space list. containerTabId 0 (or absent) means "no container". */
-function readSpaces(profile) {
-  const f = join(profile, "zen-sessions.jsonlz4");
-  if (!existsSync(f)) {
-    throw new Error(
-      `${f} not found. Spaces live in that file as of Zen 1.21; the zen_workspaces table in places.sqlite is a frozen migration source and is NOT a substitute.`
-    );
-  }
-  const spaces = mozlz4(readFileSync(f)).spaces ?? [];
-  return spaces.map((s) => ({
-    uuid: s.uuid,
-    name: s.name,
-    containerId: s.containerTabId || 0,
-  }));
-}
-
-function readContainers(profile) {
-  const f = join(profile, "containers.json");
-  if (!existsSync(f)) return [];
-  const data = JSON.parse(readFileSync(f, "utf8"));
-  return (data.identities ?? [])
-    .filter((i) => i.public)
-    .map((i) => ({ userContextId: i.userContextId, name: i.name ?? l10nName(i.l10nId) }));
-}
-
-function l10nName(id) {
-  const map = {
-    "user-context-personal": "Personal",
-    "user-context-work": "Work",
-    "user-context-banking": "Banking",
-    "user-context-shopping": "Shopping",
-  };
-  return map[id] ?? id ?? "(unnamed)";
-}
-
-function readPref(profile) {
-  for (const file of ["user.js", "prefs.js"]) {
-    const p = join(profile, file);
-    if (!existsSync(p)) continue;
-    const m = readFileSync(p, "utf8").match(
-      new RegExp(`^user_pref\\("${PREF.replace(/\./g, "\\.")}",\\s*(true|false)\\)`, "m")
-    );
-    if (m) return { value: m[1] === "true", source: file };
-  }
-  return { value: false, source: "default" };
-}
-
-function readRoutingRules(profile) {
-  const f = join(profile, "zen-space-routing.jsonlz4");
-  if (!existsSync(f)) return null;
-  try {
-    return mozlz4(readFileSync(f)).routes ?? [];
-  } catch (e) {
-    return { error: e.message };
-  }
-}
-
-function readRouteTable() {
-  if (!existsSync(ROUTE_TABLE)) return { containers: {}, routes: {}, consoles: [] };
-  const raw = JSON.parse(readFileSync(ROUTE_TABLE, "utf8"));
-  return { containers: raw.containers ?? {}, routes: raw.routes ?? {}, consoles: raw.consoles ?? [] };
-}
-
 // ---------------------------------------------------------------------------
 
-const profile = resolveProfile(process.argv[2]);
+const profile = resolveProfile(process.argv.slice(2).find((a) => !a.startsWith("--")));
 const spaces = readSpaces(profile);
 const containers = readContainers(profile);
 const pref = readPref(profile);
@@ -202,6 +68,16 @@ console.log(dim(`spaces:  zen-sessions.jsonlz4 (${spaces.length})\n`));
 
 // 1. the master switch
 console.log(`${PREF}: ${pref.value ? red("ON") : green("OFF")} ${dim(`(${pref.source})`)}`);
+if (pref.pendingRestart) {
+  console.log(
+    `  ${yellow("pending restart")} — the running Zen loaded ${pref.running ? "ON" : "OFF"}; ${pref.source} says ${pref.value ? "ON" : "OFF"}.`
+  );
+  if (pref.running) {
+    problems.push(
+      `${PREF} is still ON in the running Zen (prefs.js) even though user.js sets it OFF — it keeps stealing focus until Zen restarts, or you flip it in about:config now.`
+    );
+  }
+}
 if (pref.value) {
   problems.push(
     `${PREF} is ON — it files tabs by container, but ZenSpaceManager.onTabBrowserInserted() follows every move with an unconditional changeWorkspace(), so each background tab an agent opens yanks the browser to another space. Turn it off and use Space Routing rules, which gate the switch on !inBackground.`
@@ -211,7 +87,7 @@ if (pref.value) {
 // 2. space routing rules
 if (rules === null) console.log(`space routing rules: ${dim("none configured")}`);
 else if (rules.error) console.log(`space routing rules: ${red("unreadable")} ${dim(rules.error)}`);
-else console.log(`space routing rules: ${rules.length}`);
+else console.log(`space routing rules: ${rules.length ? green(String(rules.length)) : yellow("0")}`);
 console.log();
 
 // 3. every container needs exactly one space
@@ -264,11 +140,7 @@ for (const name of new Set([...Object.keys(table.containers), ...Object.keys(tab
 
 // 6. host coverage: every host zen-mcp routes needs a rule, pointing at a space
 //    whose container is the one zen-mcp routes that host to.
-const hostContainer = new Map();
-for (const [containerName, hosts] of Object.entries(table.containers))
-  for (const h of hosts) hostContainer.set(h.toLowerCase(), containerName);
-for (const [containerName, hosts] of Object.entries(table.routes))
-  for (const h of hosts) hostContainer.set(h.toLowerCase(), containerName);
+const hostContainer = hostContainerMap(table);
 
 if (hostContainer.size) {
   const ruleList = Array.isArray(rules) ? rules : [];
