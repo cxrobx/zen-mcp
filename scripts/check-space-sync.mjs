@@ -21,13 +21,19 @@
  * container zen-mcp routes to has exactly one space bound to it, and any Space
  * Routing rule agrees with the host's container in containers.json.
  *
- * Read-only. Copies the sqlite files before opening them, and never writes to
- * the Zen profile.
+ * SPACES LIVE IN zen-sessions.jsonlz4, NOT IN places.sqlite. The zen_workspaces
+ * table is a one-time migration source that ZenSessionManager reads once on the
+ * first launch of Zen 1.21+ and then never writes again — it is a fossil frozen
+ * at migration day, and reading it reports spaces that were deleted months ago
+ * and misses every space created since. Don't "fix" a missing space by going
+ * back to sqlite.
+ *
+ * Read-only. Never writes to the Zen profile.
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync, copyFileSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 const HOME = homedir();
@@ -42,8 +48,8 @@ const yellow = (s) => (color ? `\x1b[33m${s}\x1b[0m` : s);
 const dim = (s) => (color ? `\x1b[2m${s}\x1b[0m` : s);
 const bold = (s) => (color ? `\x1b[1m${s}\x1b[0m` : s);
 
-/** Resolve the profile Zen actually runs. profiles.ini's `Default=1` names a
- *  legacy profile here, so prefer the Install sections and break ties by the
+/** Resolve the profile Zen actually runs. profiles.ini's `Default=1` can name a
+ *  legacy profile, so prefer the Install sections and break ties by the
  *  freshest prefs.js. */
 function resolveProfile(override) {
   if (override) return override;
@@ -58,9 +64,7 @@ function resolveProfile(override) {
   }
   const live = candidates.filter((p) => existsSync(join(p, "prefs.js")));
   if (!live.length) throw new Error("no Zen profile with a prefs.js found");
-  return live
-    .map((p) => ({ p, mtime: statMtime(join(p, "prefs.js")) }))
-    .sort((a, b) => b.mtime - a.mtime)[0].p;
+  return live.map((p) => ({ p, mtime: statMtime(join(p, "prefs.js")) })).sort((a, b) => b.mtime - a.mtime)[0].p;
 }
 
 function statMtime(p) {
@@ -69,71 +73,6 @@ function statMtime(p) {
   } catch {
     return 0;
   }
-}
-
-/** Copy sqlite + its WAL to a scratch dir so an open read never touches the
- *  live file and still sees uncommitted WAL pages. */
-function readWorkspaces(profile) {
-  const db = join(profile, "places.sqlite");
-  if (!existsSync(db)) return [];
-  const scratch = mkdtempSync(join(tmpdir(), "zen-sync-"));
-  try {
-    copyFileSync(db, join(scratch, "places.sqlite"));
-    for (const suffix of ["-wal", "-shm"]) {
-      if (existsSync(db + suffix)) copyFileSync(db + suffix, join(scratch, "places.sqlite" + suffix));
-    }
-    const out = execFileSync(
-      "sqlite3",
-      [
-        join(scratch, "places.sqlite"),
-        "select uuid, name, ifnull(container_id,-1), position from zen_workspaces order by position;",
-      ],
-      { encoding: "utf8" }
-    );
-    return out
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        const [uuid, name, containerId, position] = line.split("|");
-        return { uuid, name, containerId: Number(containerId), position: Number(position) };
-      });
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
-function readContainers(profile) {
-  const f = join(profile, "containers.json");
-  if (!existsSync(f)) return [];
-  const data = JSON.parse(readFileSync(f, "utf8"));
-  return (data.identities ?? [])
-    .filter((i) => i.public)
-    .map((i) => ({
-      userContextId: i.userContextId,
-      name: i.name ?? l10nName(i.l10nId),
-    }));
-}
-
-function l10nName(id) {
-  const map = {
-    "user-context-personal": "Personal",
-    "user-context-work": "Work",
-    "user-context-banking": "Banking",
-    "user-context-shopping": "Shopping",
-  };
-  return map[id] ?? id ?? "(unnamed)";
-}
-
-function readPref(profile) {
-  for (const file of ["user.js", "prefs.js"]) {
-    const p = join(profile, file);
-    if (!existsSync(p)) continue;
-    const m = readFileSync(p, "utf8").match(
-      new RegExp(`^user_pref\\("${PREF.replace(/\./g, "\\.")}",\\s*(true|false)\\)`, "m")
-    );
-    if (m) return { value: m[1] === "true", source: file };
-  }
-  return { value: false, source: "default" };
 }
 
 /** mozlz4 = "mozLz40\0" + uint32LE decompressed size + one LZ4 block. */
@@ -175,6 +114,53 @@ function mozlz4(buf) {
   return JSON.parse(dst.subarray(0, o).toString("utf8"));
 }
 
+/** The live space list. containerTabId 0 (or absent) means "no container". */
+function readSpaces(profile) {
+  const f = join(profile, "zen-sessions.jsonlz4");
+  if (!existsSync(f)) {
+    throw new Error(
+      `${f} not found. Spaces live in that file as of Zen 1.21; the zen_workspaces table in places.sqlite is a frozen migration source and is NOT a substitute.`
+    );
+  }
+  const spaces = mozlz4(readFileSync(f)).spaces ?? [];
+  return spaces.map((s) => ({
+    uuid: s.uuid,
+    name: s.name,
+    containerId: s.containerTabId || 0,
+  }));
+}
+
+function readContainers(profile) {
+  const f = join(profile, "containers.json");
+  if (!existsSync(f)) return [];
+  const data = JSON.parse(readFileSync(f, "utf8"));
+  return (data.identities ?? [])
+    .filter((i) => i.public)
+    .map((i) => ({ userContextId: i.userContextId, name: i.name ?? l10nName(i.l10nId) }));
+}
+
+function l10nName(id) {
+  const map = {
+    "user-context-personal": "Personal",
+    "user-context-work": "Work",
+    "user-context-banking": "Banking",
+    "user-context-shopping": "Shopping",
+  };
+  return map[id] ?? id ?? "(unnamed)";
+}
+
+function readPref(profile) {
+  for (const file of ["user.js", "prefs.js"]) {
+    const p = join(profile, file);
+    if (!existsSync(p)) continue;
+    const m = readFileSync(p, "utf8").match(
+      new RegExp(`^user_pref\\("${PREF.replace(/\./g, "\\.")}",\\s*(true|false)\\)`, "m")
+    );
+    if (m) return { value: m[1] === "true", source: file };
+  }
+  return { value: false, source: "default" };
+}
+
 function readRoutingRules(profile) {
   const f = join(profile, "zen-space-routing.jsonlz4");
   if (!existsSync(f)) return null;
@@ -194,7 +180,7 @@ function readRouteTable() {
 // ---------------------------------------------------------------------------
 
 const profile = resolveProfile(process.argv[2]);
-const workspaces = readWorkspaces(profile);
+const spaces = readSpaces(profile);
 const containers = readContainers(profile);
 const pref = readPref(profile);
 const rules = readRoutingRules(profile);
@@ -203,18 +189,18 @@ const table = readRouteTable();
 const problems = [];
 const byId = new Map(containers.map((c) => [c.userContextId, c]));
 const spacesFor = new Map();
-for (const w of workspaces) {
-  if (w.containerId < 0) continue;
-  if (!spacesFor.has(w.containerId)) spacesFor.set(w.containerId, []);
-  spacesFor.get(w.containerId).push(w);
+for (const s of spaces) {
+  if (!s.containerId) continue;
+  if (!spacesFor.has(s.containerId)) spacesFor.set(s.containerId, []);
+  spacesFor.get(s.containerId).push(s);
 }
 
 console.log(bold("\nZen spaces ↔ containers ↔ zen-mcp route table"));
-console.log(dim(`profile: ${profile}\n`));
+console.log(dim(`profile: ${profile}`));
+console.log(dim(`spaces:  zen-sessions.jsonlz4 (${spaces.length})\n`));
 
 // 1. the master switch
-const prefLine = pref.value ? green("ON") : red("OFF");
-console.log(`${PREF}: ${prefLine} ${dim(`(${pref.source})`)}`);
+console.log(`${PREF}: ${pref.value ? green("ON") : red("OFF")} ${dim(`(${pref.source})`)}`);
 if (!pref.value) {
   problems.push(
     `${PREF} is OFF — a tab zen-mcp opens in a container is filed into whatever space is active at that moment, not the space that owns the container.`
@@ -222,17 +208,13 @@ if (!pref.value) {
 }
 
 // 2. space routing rules
-if (rules === null) {
-  console.log(`space routing rules: ${dim("none configured")}`);
-} else if (rules.error) {
-  console.log(`space routing rules: ${red("unreadable")} ${dim(rules.error)}`);
-} else {
-  console.log(`space routing rules: ${rules.length}`);
-}
+if (rules === null) console.log(`space routing rules: ${dim("none configured")}`);
+else if (rules.error) console.log(`space routing rules: ${red("unreadable")} ${dim(rules.error)}`);
+else console.log(`space routing rules: ${rules.length}`);
 console.log();
 
 // 3. every container needs exactly one space
-const width = Math.max(...containers.map((c) => c.name.length), 12);
+const width = Math.max(...containers.map((c) => c.name.length), ...spaces.map((s) => s.name.length), 12);
 console.log(bold(`${"container".padEnd(width)}  ${"space".padEnd(width)}  status`));
 for (const c of containers) {
   const bound = spacesFor.get(c.userContextId) ?? [];
@@ -259,24 +241,19 @@ for (const c of containers) {
 
 // 4. spaces pointing at a container that is gone or private
 console.log();
-const orphaned = workspaces.filter((w) => w.containerId >= 0 && !byId.has(w.containerId));
-const unbound = workspaces.filter((w) => w.containerId < 0);
-for (const w of orphaned) {
-  console.log(
-    `${red("space")} "${w.name}" is bound to container id ${w.containerId}, which is not a public container.`
-  );
+for (const s of spaces.filter((s) => s.containerId && !byId.has(s.containerId))) {
+  console.log(`${red("space")} "${s.name}" is bound to container id ${s.containerId}, which is not a public container.`);
   problems.push(
-    `space "${w.name}" points at container id ${w.containerId} — not a public container (likely a deleted or internal one). Rebind it in the space's settings.`
+    `space "${s.name}" points at container id ${s.containerId} — not a public container (likely deleted). Rebind it in Edit Space → Profile.`
   );
 }
-for (const w of unbound) {
-  console.log(`${yellow("space")} "${w.name}" has no container bound. ${dim("(fine if deliberate)")}`);
+for (const s of spaces.filter((s) => !s.containerId)) {
+  console.log(`${yellow("space")} "${s.name}" has no container bound. ${dim("(fine if deliberate)")}`);
 }
 
 // 5. containers.json names a container Zen does not have
-const named = new Set([...Object.keys(table.containers), ...Object.keys(table.routes)]);
 const knownNames = new Set(containers.map((c) => c.name));
-for (const name of named) {
+for (const name of new Set([...Object.keys(table.containers), ...Object.keys(table.routes)])) {
   if (!knownNames.has(name)) {
     problems.push(
       `~/.config/zen-mcp/containers.json routes to container "${name}", which does not exist in Zen — those URLs error and open nothing.`
@@ -292,7 +269,7 @@ if (Array.isArray(rules) && rules.length) {
   for (const [containerName, hosts] of Object.entries(table.routes))
     for (const h of hosts) hostContainer.set(h.toLowerCase(), containerName);
 
-  const spaceByUuid = new Map(workspaces.map((w) => [w.uuid, w]));
+  const spaceByUuid = new Map(spaces.map((s) => [s.uuid, s]));
   for (const rule of rules) {
     if (rule.openIn === "most-recent-space") continue;
     const space = spaceByUuid.get(rule.openIn);
