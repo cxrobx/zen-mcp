@@ -1,6 +1,6 @@
 /**
- * Read-side helpers for the live Zen profile, shared by check-space-sync.mjs and
- * gen-space-routes.mjs so the two can never disagree about where anything lives.
+ * Read-side helpers for the live Zen profile, used by check-space-sync.mjs.
+ * Read-only by design: nothing here writes to the profile.
  *
  * SPACES LIVE IN zen-sessions.jsonlz4, NOT IN places.sqlite. The zen_workspaces
  * table is a one-time migration source ZenSessionManager reads once on the first
@@ -85,35 +85,6 @@ export function mozlz4Decode(buf) {
     o += matchLen;
   }
   return dst.subarray(0, o);
-}
-
-/**
- * Encode as mozlz4 using a single literal-only LZ4 sequence — valid, and the
- * one form that needs no match-finding. These files are ~1-2KB, so the lost
- * compression is irrelevant and the correctness is worth more.
- */
-export function mozlz4Encode(payload) {
-  const raw = Buffer.from(payload, "utf8");
-  const parts = [];
-  const litLen = raw.length;
-  if (litLen < 15) {
-    parts.push(Buffer.from([litLen << 4]));
-  } else {
-    parts.push(Buffer.from([0xf0]));
-    let rem = litLen - 15;
-    const ext = [];
-    while (rem >= 255) {
-      ext.push(255);
-      rem -= 255;
-    }
-    ext.push(rem);
-    parts.push(Buffer.from(ext));
-  }
-  parts.push(raw);
-  const header = Buffer.alloc(12);
-  header.write(MAGIC, 0, "latin1");
-  header.writeUInt32LE(raw.length, 8);
-  return Buffer.concat([header, ...parts]);
 }
 
 /** The live space list. containerTabId 0 (or absent) means "no container". */

@@ -21,7 +21,6 @@
     "test:tab-target": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/tab-target.test.mjs",
     "test:container-routes": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/container-routes.test.mjs",
     "test:fill-secret": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/fill-secret.test.mjs",
-    "gen:routes": "node scripts/gen-space-routes.mjs",
     "check:spaces": "node scripts/check-space-sync.mjs",
     "daemon": "node daemon/dist/index.js",
     "server": "node server/dist/index.js",
