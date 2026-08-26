@@ -7,19 +7,20 @@
  * CONTAINER but never its SPACE. Zen decides the space itself, by two
  * mechanisms this script inspects:
  *
- *   1. zen.workspaces.force-container-workspace (default OFF)
- *      When ON, a tab created with an explicit container is filed into the one
- *      space bound to that container — ZenSpaceManager.getContextIdIfNeeded().
- *      "One" is literal: the match is `matchingWorkspaces.length === 1`, so a
- *      container with zero spaces, or two, silently stops being filed.
+ *   1. Space Routing rules (zen-space-routing.jsonlz4, Zen 1.21+) — THE ONE TO USE.
+ *      URL pattern -> space, applied in ZenSpaceRoutingManager.#routeToWorkspace(),
+ *      which moves the tab and gates the space SWITCH on `!inBackground`. zen-mcp
+ *      opens in the background, so the tab is filed and focus never moves.
  *
- *   2. Space Routing rules (zen-space-routing.jsonlz4, Zen 1.21+)
- *      URL pattern -> space. Applied in ZenSpaceRoutingManager.onAfterAddTab(),
- *      which runs AFTER the force logic and therefore outranks it.
+ *   2. zen.workspaces.force-container-workspace — DO NOT ENABLE. It files the tab
+ *      by container, but ZenSpaceManager.onTabBrowserInserted() then runs an
+ *      unconditional `setTimeout(() => this.changeWorkspace(workspace), 0)` with no
+ *      inBackground check, so every tab an agent opens yanks the browser to another
+ *      space. Measured 2026-08-25 against live Zen 1.21.15b.
  *
- * So the invariant that keeps spaces and containers together is: every
- * container zen-mcp routes to has exactly one space bound to it, and any Space
- * Routing rule agrees with the host's container in containers.json.
+ * So the invariant that keeps spaces and containers together is: every host in
+ * containers.json has a Space Routing rule, and that rule points at a space whose
+ * container is the one containers.json routes the host to.
  *
  * SPACES LIVE IN zen-sessions.jsonlz4, NOT IN places.sqlite. The zen_workspaces
  * table is a one-time migration source that ZenSessionManager reads once on the
@@ -200,10 +201,10 @@ console.log(dim(`profile: ${profile}`));
 console.log(dim(`spaces:  zen-sessions.jsonlz4 (${spaces.length})\n`));
 
 // 1. the master switch
-console.log(`${PREF}: ${pref.value ? green("ON") : red("OFF")} ${dim(`(${pref.source})`)}`);
-if (!pref.value) {
+console.log(`${PREF}: ${pref.value ? red("ON") : green("OFF")} ${dim(`(${pref.source})`)}`);
+if (pref.value) {
   problems.push(
-    `${PREF} is OFF — a tab zen-mcp opens in a container is filed into whatever space is active at that moment, not the space that owns the container.`
+    `${PREF} is ON — it files tabs by container, but ZenSpaceManager.onTabBrowserInserted() follows every move with an unconditional changeWorkspace(), so each background tab an agent opens yanks the browser to another space. Turn it off and use Space Routing rules, which gate the switch on !inBackground.`
   );
 }
 
@@ -261,30 +262,64 @@ for (const name of new Set([...Object.keys(table.containers), ...Object.keys(tab
   }
 }
 
-// 6. a routing rule that contradicts the route table's container for that host
-if (Array.isArray(rules) && rules.length) {
-  const hostContainer = new Map();
-  for (const [containerName, hosts] of Object.entries(table.containers))
-    for (const h of hosts) hostContainer.set(h.toLowerCase(), containerName);
-  for (const [containerName, hosts] of Object.entries(table.routes))
-    for (const h of hosts) hostContainer.set(h.toLowerCase(), containerName);
+// 6. host coverage: every host zen-mcp routes needs a rule, pointing at a space
+//    whose container is the one zen-mcp routes that host to.
+const hostContainer = new Map();
+for (const [containerName, hosts] of Object.entries(table.containers))
+  for (const h of hosts) hostContainer.set(h.toLowerCase(), containerName);
+for (const [containerName, hosts] of Object.entries(table.routes))
+  for (const h of hosts) hostContainer.set(h.toLowerCase(), containerName);
 
+if (hostContainer.size) {
+  const ruleList = Array.isArray(rules) ? rules : [];
   const spaceByUuid = new Map(spaces.map((s) => [s.uuid, s]));
-  for (const rule of rules) {
-    if (rule.openIn === "most-recent-space") continue;
+  const hostWidth = Math.max(...[...hostContainer.keys()].map((h) => h.length), 4);
+
+  console.log();
+  console.log(bold(`${"host".padEnd(hostWidth)}  ${"container".padEnd(width)}  routes to space`));
+  for (const [host, mcpContainer] of hostContainer) {
+    // Zen matches "contains" against the whole URL, so a rule covers a host when
+    // its reference is a substring of that host (or matches it outright).
+    const rule = ruleList.find((r) => {
+      const ref = String(r.reference ?? "").toLowerCase();
+      if (!ref) return false;
+      return r.matchType === "regex" ? safeRegex(ref, host) : host.includes(ref) || ref.includes(host);
+    });
+    if (!rule) {
+      console.log(`${host.padEnd(hostWidth)}  ${mcpContainer.padEnd(width)}  ${yellow("no rule — stays in the active space")}`);
+      problems.push(
+        `host "${host}" has no Space Routing rule, so a tab zen-mcp opens for it gets the right container but stays in whatever space is active.`
+      );
+      continue;
+    }
+    if (rule.openIn === "most-recent-space") {
+      console.log(`${host.padEnd(hostWidth)}  ${mcpContainer.padEnd(width)}  ${yellow("rule set to \"most recent space\"")}`);
+      problems.push(`host "${host}" has a rule, but it opens in "most recent space" — pick the space explicitly.`);
+      continue;
+    }
     const space = spaceByUuid.get(rule.openIn);
     if (!space) {
+      console.log(`${host.padEnd(hostWidth)}  ${mcpContainer.padEnd(width)}  ${red("rule points at a deleted space")}`);
       problems.push(`space routing rule "${rule.reference}" points at a space that no longer exists.`);
       continue;
     }
-    const mcpContainer = hostContainer.get(String(rule.reference).toLowerCase());
-    if (!mcpContainer) continue;
     const spaceContainer = byId.get(space.containerId)?.name ?? "(none)";
     if (spaceContainer !== mcpContainer) {
+      console.log(`${host.padEnd(hostWidth)}  ${mcpContainer.padEnd(width)}  ${red(`${space.name} (container ${spaceContainer})`)}`);
       problems.push(
-        `host "${rule.reference}": zen-mcp routes it to container "${mcpContainer}", but the Zen rule sends it to space "${space.name}" whose container is "${spaceContainer}". The Zen rule wins, so the tab lands in the wrong pairing.`
+        `host "${host}": zen-mcp routes it to container "${mcpContainer}", but the Zen rule sends it to space "${space.name}" whose container is "${spaceContainer}". The Zen rule wins, so the tab lands in the wrong pairing.`
       );
+    } else {
+      console.log(`${host.padEnd(hostWidth)}  ${mcpContainer.padEnd(width)}  ${green(space.name)}`);
     }
+  }
+}
+
+function safeRegex(pattern, value) {
+  try {
+    return new RegExp(pattern).test(value);
+  } catch {
+    return false;
   }
 }
 
