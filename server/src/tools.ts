@@ -962,26 +962,22 @@ export function registerTools(
         const target = await (async (): Promise<PageInfo> => {
           if (typeof tabId === "number") return findTabById(daemon, visible, tabId);
           if (typeof pageIdx === "number") return pageByIdx(visible, pageIdx);
-          if (url) {
-            const matches = searchable.filter((p) => p.url.includes(url));
-            if (matches.length === 0) throw new Error(`no page matches url substring "${url}"${inContainer}`);
-            if (matches.length > 1) {
-              throw new Error(
-                `${matches.length} pages match url "${url}"${inContainer}; refine the substring, pass container, or use tabId`,
-              );
+          // Visible tier first: a substring that uniquely named a tab in the active workspace
+          // keeps naming it, whatever sits in other workspaces. Only when nothing visible
+          // matches does the search widen, and ambiguity is judged within the tier.
+          const tiers = [searchable.filter(isVisible), searchable.filter((p) => !isVisible(p))];
+          const unique = (field: "url" | "title", needle: string, hint: string): PageInfo => {
+            for (const tier of tiers) {
+              const matches = tier.filter((p) => p[field].includes(needle));
+              if (matches.length === 1) return matches[0]!;
+              if (matches.length > 1) {
+                throw new Error(`${matches.length} pages match ${field} "${needle}"${inContainer}; ${hint}`);
+              }
             }
-            return matches[0]!;
-          }
-          if (title) {
-            const matches = searchable.filter((p) => p.title.includes(title));
-            if (matches.length === 0) throw new Error(`no page matches title substring "${title}"${inContainer}`);
-            if (matches.length > 1) {
-              throw new Error(
-                `${matches.length} pages match title "${title}"${inContainer}; refine, pass container, or use tabId`,
-              );
-            }
-            return matches[0]!;
-          }
+            throw new Error(`no page matches ${field} substring "${needle}"${inContainer}`);
+          };
+          if (url) return unique("url", url, "refine the substring, pass container, or use tabId");
+          if (title) return unique("title", title, "refine, pass container, or use tabId");
           throw new ZenToolError("BAD_INPUT", "provide one of: tabId, pageIdx, url, title");
         })();
         await daemon.call(Methods.PagesSelect, { tabId: target.tabId });

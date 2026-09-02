@@ -35,6 +35,8 @@ const WORKSPACE_A = [
 const WORKSPACE_B = [
   page({ tabId: 301, index: 0, url: "https://search.google.com/search-console", title: "GSC", active: true }),
   page({ tabId: 302, index: 1, url: "https://search.google.com/search-console/clients", title: "GSC client" }),
+  // Shares a substring with workspace A's target tab: the trap for select_page's url search.
+  page({ tabId: 303, index: 2, url: "https://example.com/target-archive", title: "Archive" }),
 ];
 
 function page({ tabId, index, url, title, active = false }) {
@@ -341,7 +343,7 @@ test("list_pages hides other workspaces by default and lists them positionless o
   const withHidden = await mcp.callTool("list_pages", { includeHidden: true });
   assert.equal(withHidden.isError, false, withHidden.text);
   assert.match(withHidden.text, /2 tabs visible in the active Zen workspace/);
-  assert.match(withHidden.text, /2 more tabs in other Zen workspaces/);
+  assert.match(withHidden.text, /3 more tabs in other Zen workspaces/);
   assert.match(withHidden.text, /\[-\] tabId=301 /);
   assert.doesNotMatch(withHidden.text, /\[\d+\] tabId=301/, "hidden tabs get no position");
   const fp = (t) => /tabSet=([0-9a-f]{8})/.exec(t)[1];
@@ -355,6 +357,20 @@ test("select_page finds a tab in another workspace by url and switches to it", a
   assert.match(text, /selected tabId=302 /);
   assert.match(text, /Zen switched to it/);
   assert.equal(ext.requestsFor("pages.select").at(-1).params.tabId, 302);
+});
+
+test("select_page prefers a unique visible match over other-workspace tabs sharing the substring", async () => {
+  ext.setVisibleTabs(WORKSPACE_A);
+  // "example.com/target" names 202 (visible) and 303 (other workspace): not ambiguous.
+  const { isError, text } = await mcp.callTool("select_page", { url: "example.com/target" });
+  assert.equal(isError, false, text);
+  assert.match(text, /^selected tabId=202 /);
+  assert.doesNotMatch(text, /Zen switched/);
+
+  // Ambiguity is still an error when it is WITHIN the visible set.
+  const both = await mcp.callTool("select_page", { url: "example.com" });
+  assert.equal(both.isError, true);
+  assert.match(both.text, /2 pages match url "example.com"/);
 });
 
 test("every pageIdx-addressed tool inherits the same tabId guard", async () => {
@@ -432,7 +448,7 @@ test("get_firefox_info reports the visible count, a fingerprint, and no invented
   ext.setVisibleTabs(WORKSPACE_B);
   const { isError, text } = await mcp.callTool("get_firefox_info");
   assert.equal(isError, false);
-  assert.match(text, /tabs\.visible: 2 \(active Zen workspace only\)/);
+  assert.match(text, /tabs\.visible: 3 \(active Zen workspace only\)/);
   assert.match(text, /tabs\.fingerprint: [0-9a-f]{8}/);
   assert.match(text, /tabs\.workspaceId: \(not exposed by Zen to WebExtensions\)/);
 });
