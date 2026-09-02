@@ -10,6 +10,9 @@ import {
   type EvaluateScriptResult,
   type FillByLocatorParams,
   type FillFormParams,
+  type GetPageParams,
+  type GetPageResult,
+  type PagesListParams,
   type FillParams,
   type FirefoxContainer,
   type GetCookiesParams,
@@ -70,7 +73,11 @@ async function buildContainerLookup(): Promise<Map<string, string>> {
   return map;
 }
 
-function tabToPageInfo(tab: browser.tabs.Tab, names: Map<string, string>): PageInfo {
+function tabToPageInfo(
+  tab: browser.tabs.Tab,
+  names: Map<string, string>,
+  inActiveWorkspace: boolean,
+): PageInfo {
   const cookieStoreId = tab.cookieStoreId ?? "firefox-default";
   return {
     tabId: tab.id ?? -1,
@@ -81,7 +88,82 @@ function tabToPageInfo(tab: browser.tabs.Tab, names: Map<string, string>): PageI
     active: !!tab.active,
     cookieStoreId,
     containerName: names.get(cookieStoreId) ?? null,
+    inActiveWorkspace,
+    discarded: !!(tab as { discarded?: boolean }).discarded,
   };
+}
+
+// --- Tabs in other Zen workspaces --------------------------------------------------------
+// Zen builds gBrowser.tabs from the ACTIVE space's tab strip only, and browser.tabs.query()
+// iterates gBrowser.tabs, so a tab in another space never appears in a query - it is not
+// `hidden`, it is simply not enumerated. It is still addressable: the parent-side tab tracker
+// resolves ids from a plain map with no workspace filter, so tabs.get / scripting /
+// captureTab / tabs.update all reach it by id. Ids are dense sequential integers, so the
+// live set is recoverable by probing every id up to the highest one seen. tabs.onCreated
+// keeps that horizon current and, as a side effect, forces an id onto every tab the moment
+// it is created in ANY space (session restore included) - which is what makes it probe-able.
+const TAB_ID_HORIZON_KEY = "tabIdHorizon";
+const TAB_ID_PROBE_MARGIN = 16;
+let tabIdHorizon = 0;
+
+function noteTabId(tabId: number | undefined): void {
+  if (typeof tabId !== "number" || !(tabId > tabIdHorizon)) return;
+  tabIdHorizon = tabId;
+  const store = snapshotStorage();
+  if (store) void store.set({ [TAB_ID_HORIZON_KEY]: tabId }).catch(() => undefined);
+}
+
+async function loadTabIdHorizon(): Promise<void> {
+  const store = snapshotStorage();
+  if (!store) return;
+  try {
+    const got = await store.get(TAB_ID_HORIZON_KEY);
+    const stored = got[TAB_ID_HORIZON_KEY];
+    if (typeof stored === "number" && stored > tabIdHorizon) tabIdHorizon = stored;
+  } catch {
+    // Best effort: the probe still covers every id the visible set reaches.
+  }
+}
+
+/** Tabs reachable by id but absent from tabs.query(): the other Zen workspaces' tabs. */
+async function probeHiddenWorkspaceTabs(visible: browser.tabs.Tab[]): Promise<browser.tabs.Tab[]> {
+  const seen = new Set<number>();
+  for (const tab of visible) {
+    if (typeof tab.id !== "number") continue;
+    seen.add(tab.id);
+    noteTabId(tab.id);
+  }
+  const ids: number[] = [];
+  for (let id = 1; id <= tabIdHorizon + TAB_ID_PROBE_MARGIN; id++) {
+    if (!seen.has(id)) ids.push(id);
+  }
+  const settled = await Promise.allSettled(ids.map((id) => browser.tabs.get(id)));
+  const hidden: browser.tabs.Tab[] = [];
+  for (const entry of settled) {
+    if (entry.status !== "fulfilled" || typeof entry.value.id !== "number") continue;
+    hidden.push(entry.value);
+    noteTabId(entry.value.id);
+  }
+  return hidden;
+}
+
+/**
+ * Selecting a tab in another space makes Zen switch the space asynchronously and select the
+ * tab afterwards, so tabs.update resolves before the tab is active. Wait for it so the
+ * caller's next list_pages already shows the new space.
+ */
+async function waitForTabActive(tabId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const tab = await browser.tabs.get(tabId);
+      if (tab.active) return true;
+    } catch {
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
 }
 
 function requireString(value: unknown, name: string): string {
@@ -168,6 +250,8 @@ browser.webNavigation.onCommitted.addListener(clearTopFrameSnapshot);
 browser.webNavigation.onHistoryStateUpdated.addListener(clearTopFrameSnapshot);
 browser.webNavigation.onReferenceFragmentUpdated.addListener(clearTopFrameSnapshot);
 browser.tabs.onRemoved.addListener((tabId) => void clearSnapshotCache(tabId));
+browser.tabs.onCreated.addListener((tab) => noteTabId(tab.id));
+void loadTabIdHorizon();
 
 function isPrivilegedUrl(url: string): boolean {
   return (
@@ -953,13 +1037,36 @@ export const handlers: Record<string, Handler> = {
     return { containers };
   },
 
-  [Methods.PagesList]: async () => {
+  [Methods.PagesList]: async (raw) => {
+    const params = (raw ?? {}) as PagesListParams;
     const [tabs, names] = await Promise.all([
       browser.tabs.query({}),
       buildContainerLookup(),
     ]);
-    const pages = tabs.map((t) => tabToPageInfo(t, names));
+    const pages = tabs.map((t) => tabToPageInfo(t, names, true));
+    if (params.includeHidden) {
+      const hidden = await probeHiddenWorkspaceTabs(tabs);
+      for (const t of hidden) pages.push(tabToPageInfo(t, names, false));
+    }
     return { pages };
+  },
+
+  [Methods.PagesGet]: async (raw): Promise<GetPageResult> => {
+    const params = raw as GetPageParams;
+    const tabId = requireNumber(params?.tabId, "tabId");
+    const [visible, names] = await Promise.all([
+      browser.tabs.query({}),
+      buildContainerLookup(),
+    ]);
+    const shown = visible.find((t) => t.id === tabId);
+    if (shown) return { page: tabToPageInfo(shown, names, true) };
+    try {
+      const tab = await browser.tabs.get(tabId);
+      noteTabId(tab.id);
+      return { page: tabToPageInfo(tab, names, false) };
+    } catch {
+      return { page: null };
+    }
   },
 
   [Methods.PagesNew]: async (raw): Promise<NewPageResult> => {
@@ -991,6 +1098,8 @@ export const handlers: Record<string, Handler> = {
     const params = raw as SelectPageParams;
     const tabId = requireNumber(params?.tabId, "tabId");
     const tab = await browser.tabs.update(tabId, { active: true });
+    // A tab in another Zen space is selected only after Zen finishes switching spaces.
+    if (!tab.active) await waitForTabActive(tabId, 3000);
     if (tab.windowId !== undefined) {
       await browser.windows.update(tab.windowId, { focused: true });
     }

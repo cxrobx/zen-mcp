@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+  type GetPageResult,
+  type PagesListParams,
   type ClearCookiesResult,
   type ContainersListResult,
   ErrorCode,
@@ -121,12 +123,12 @@ function truncateOneLine(value: string | undefined, maxLen: number): string {
 // POSITION in that visible list, so a workspace switch silently re-points every index at a
 // different tab. tabId addresses a tab by identity and fails loudly instead.
 const WORKSPACE_NOTE =
-  "Zen Workspaces scope the WebExtension tab list to the ACTIVE workspace - tabs in other workspaces are absent from the API, not merely hidden.";
+  "Zen Workspaces scope the WebExtension tab list to the ACTIVE workspace - tabs in other workspaces are absent from the list, not merely hidden. They stay reachable by tabId (list_pages includeHidden=true enumerates them).";
 
 const PAGE_IDX_DESC =
   "Position in the list_pages output. Convenience only: positions shift whenever a tab opens or closes, and a Zen workspace switch re-points every index at a different tab. Prefer tabId.";
 const TAB_ID_DESC =
-  "Durable tab handle from list_pages (tabId=NNN). Survives reordering and errors if the tab is not in the active Zen workspace, instead of silently hitting another tab. Preferred over pageIdx; pass exactly one of the two.";
+  "Durable tab handle from list_pages (tabId=NNN). Survives reordering and Zen workspace switches: a tab in another workspace is still reached by its id, in place, and only a closed tab errors. Preferred over pageIdx; pass exactly one of the two.";
 const EXPECT_TAB_SET_DESC =
   "Optional guard: the tabSet fingerprint printed in the list_pages header. If the visible tab set changed since then, the call fails without acting.";
 
@@ -144,8 +146,14 @@ export interface PageTarget {
   expectTabSet?: string;
 }
 
+/** A tab is visible when it sits in the active Zen workspace; an older extension reports nothing else. */
+function isVisible(page: PageInfo): boolean {
+  return page.inActiveWorkspace !== false;
+}
+
+/** The fingerprint always describes the VISIBLE set - hidden tabs have no position to guard. */
 export function tabSetFingerprint(pages: PageInfo[]): string {
-  const material = sortedPages(pages)
+  const material = sortedPages(pages.filter(isVisible))
     .map((p) => `${p.windowId}:${p.index}:${p.tabId}`)
     .join(",");
   return createHash("sha256").update(material).digest("hex").slice(0, 8);
@@ -155,13 +163,31 @@ function visibleSetSuffix(pages: PageInfo[]): string {
   return `${pages.length} tab${pages.length === 1 ? "" : "s"} are currently visible (tabSet=${tabSetFingerprint(pages)}); run list_pages to re-resolve.`;
 }
 
-function pageByTabId(pages: PageInfo[], tabId: number): PageInfo {
+/**
+ * Resolve a tabId: the visible set first, then - because a tabId is an identity, not a
+ * position - the other Zen workspaces via pages.get. A tab found there comes back flagged
+ * inActiveWorkspace: false and every id-addressed RPC reaches it in place, so this is not
+ * the workspace footgun (that is pageIdx re-pointing, which stays guarded). Only a tab that
+ * exists in NO workspace errors. An extension too old to answer pages.get keeps the old
+ * loud failure rather than guessing.
+ */
+async function findTabById(daemon: DaemonClient, pages: PageInfo[], tabId: number): Promise<PageInfo> {
   const page = pages.find((p) => p.tabId === tabId);
   if (page) return page;
+  let unsupported = false;
+  try {
+    const r = await daemon.call<GetPageResult>(Methods.PagesGet, { tabId });
+    if (r.page) return r.page;
+  } catch (err) {
+    if (err instanceof RpcError && err.code === ErrorCode.MethodNotFound) unsupported = true;
+    else throw err;
+  }
   throw new ZenToolError(
     "NOT_FOUND",
-    `tabId ${tabId} not found in the active workspace - it may be in another Zen workspace. Switch workspaces or re-resolve by URL.`,
-    `Nothing was done. ${WORKSPACE_NOTE} ${visibleSetSuffix(pages)}`,
+    unsupported
+      ? `tabId ${tabId} not found in the active workspace - it may be in another Zen workspace, and the installed extension is too old to reach it there (no pages.get). Switch workspaces or re-resolve by URL.`
+      : `tabId ${tabId} not found in any Zen workspace - the tab was closed.`,
+    `Nothing was done. ${unsupported ? `${WORKSPACE_NOTE} ` : ""}${visibleSetSuffix(pages)}`,
   );
 }
 
@@ -204,7 +230,7 @@ async function resolveTarget(daemon: DaemonClient, target: PageTarget): Promise<
     }
   }
   return hasTabId
-    ? pageByTabId(pages, target.tabId as number)
+    ? findTabById(daemon, pages, target.tabId as number)
     : pageByIdx(pages, target.pageIdx as number);
 }
 
@@ -247,9 +273,24 @@ function matchesContainerFilter(page: PageInfo, filter: string): boolean {
   return (page.containerName ?? "").toLowerCase() === filter.toLowerCase();
 }
 
-function formatPageList(pages: PageInfo[], containerFilter?: string): string {
+function formatHiddenPages(hidden: PageInfo[], containerFilter?: string): string {
+  const shown = containerFilter ? hidden.filter((p) => matchesContainerFilter(p, containerFilter)) : hidden;
+  if (shown.length === 0) return "";
+  const scope = containerFilter ? ` (${shown.length} of ${hidden.length} after the container filter)` : "";
+  const header = `${hidden.length} more tab${hidden.length === 1 ? "" : "s"} in other Zen workspaces${scope} - no [n] position; address by tabId. Reads and DOM tools reach them in place; select_page or active=true makes Zen switch to that workspace.`;
+  const lines = shown.map((page) => {
+    const container = page.containerName ?? "no container";
+    const title = page.title ? ` "${page.title}"` : "";
+    return `  [-] tabId=${page.tabId} ${page.url}${title} (${container})${page.discarded ? " [unloaded]" : ""}`;
+  });
+  return `\n${header}\n${lines.join("\n")}`;
+}
+
+function formatPageList(all: PageInfo[], containerFilter?: string): string {
   // The fingerprint and the [n] positions always describe the FULL visible set: filtering is
   // a display convenience and must not renumber indexes that other tools resolve positionally.
+  // Hidden (other-workspace) tabs are listed after, positionless.
+  const pages = all.filter(isVisible);
   const fingerprint = tabSetFingerprint(pages);
   const entries = pages.map((page, index) => ({ page, index }));
   const shown = containerFilter
@@ -259,21 +300,29 @@ function formatPageList(pages: PageInfo[], containerFilter?: string): string {
     ? `\nShowing ${shown.length} of ${pages.length} - container filter "${containerFilter}". Positions and tabSet still describe the full visible set.`
     : "";
   const header = `${pages.length} tab${pages.length === 1 ? "" : "s"} visible in the active Zen workspace · tabSet=${fingerprint}\nAddress tabs by tabId (durable); [n] is a position in this listing and shifts when tabs open, close, or the workspace changes.${scopeNote}`;
-  if (shown.length === 0) return `${header}\n(no pages)`;
+  const hiddenText = formatHiddenPages(all.filter((p) => !isVisible(p)), containerFilter);
+  if (shown.length === 0) return `${header}\n(no pages)${hiddenText}`;
   const lines = shown.map(({ page, index }) => {
     const marker = page.active ? "*" : " ";
     const container = page.containerName ?? "no container";
     const title = page.title ? ` "${page.title}"` : "";
     return `${marker} [${index}] tabId=${page.tabId} ${page.url}${title} (${container})`;
   });
-  return `${header}\n${lines.join("\n")}`;
+  return `${header}\n${lines.join("\n")}${hiddenText}`;
 }
 
-async function listPages(daemon: DaemonClient): Promise<PageInfo[]> {
-  const result = await daemon.call<PagesListResult>(Methods.PagesList);
-  const pages = sortedPages(result.pages);
-  activeNav?.observePages(pages);
-  return pages;
+/**
+ * Visible tabs in (windowId, index) order, then - with includeHidden - the other workspaces'
+ * tabs by tabId (their index is stale, so it must not order anything). Callers that index
+ * positionally filter with isVisible first.
+ */
+async function listPages(daemon: DaemonClient, includeHidden = false): Promise<PageInfo[]> {
+  const params: PagesListParams | undefined = includeHidden ? { includeHidden: true } : undefined;
+  const result = await daemon.call<PagesListResult>(Methods.PagesList, params);
+  const visible = sortedPages(result.pages.filter(isVisible));
+  const hidden = result.pages.filter((p) => !isVisible(p)).sort((a, b) => a.tabId - b.tabId);
+  activeNav?.observePages(visible);
+  return [...visible, ...hidden];
 }
 
 async function resolveScopeContainer(
@@ -641,17 +690,23 @@ export function registerTools(
     {
       title: "List pages",
       description:
-        "List the open tabs the browser exposes, ordered by (windowId, tab.index). Every line carries tabId=NNN - that is the durable handle to pass to other tools; the bracketed [n] is only a position in this listing. Zen Workspaces scope this list to the ACTIVE workspace: tabs in other workspaces are absent from the API entirely, so a workspace switch changes both the membership and the numbering. The header's tabSet fingerprint identifies the visible set and can be passed back as expectTabSet to make a later call fail rather than act on a re-pointed index. Pass container to show only one container's tabs; positions and the fingerprint still describe the full visible set.",
+        "List the open tabs, ordered by (windowId, tab.index). Every line carries tabId=NNN - that is the durable handle to pass to other tools; the bracketed [n] is only a position in this listing. Zen Workspaces scope the list to the ACTIVE workspace by default: tabs in other workspaces are not enumerated, so a workspace switch changes both the membership and the numbering. Pass includeHidden=true to also list the other workspaces' tabs (found by tabId, listed after the visible set with no position); every tool then reaches such a tab by tabId in place, and select_page or open_url active=true makes Zen switch to it. The header's tabSet fingerprint identifies the visible set and can be passed back as expectTabSet to make a later call fail rather than act on a re-pointed index. Pass container to show only one container's tabs; positions and the fingerprint still describe the full visible set.",
       inputSchema: {
         container: z
           .string()
           .optional()
           .describe('Show only tabs in this container. Exact container name, or "none" for tabs with no container.'),
+        includeHidden: z
+          .boolean()
+          .optional()
+          .describe(
+            "Also list tabs in other Zen workspaces. Default false. They appear after the visible set, positionless, addressable by tabId.",
+          ),
       },
     },
-    async ({ container }) => {
+    async ({ container, includeHidden }) => {
       try {
-        const pages = await listPages(daemon);
+        const pages = await listPages(daemon, includeHidden === true);
         return ok(formatPageList(pages, container));
       } catch (err) {
         return fail(err);
@@ -697,7 +752,7 @@ export function registerTools(
     {
       title: "Open URL in the owning container",
       description:
-        "Preferred way to reach a URL. Routes it to the container that owns the domain (rules in the container route table, see container_routes), then goes to the tab already open on that host in that container instead of stacking up duplicates - focusing it if it is already at that URL, otherwise navigating it. Opens a new tab in the right container only when no such tab is visible. Route rules outrank the session default container, so a project's URL lands in that project's cookie jar from any zen-* server. On a configured console host (a shared multi-project host like a search console), routing needs the URL to name a container's domain or alias; when it names none this errors and opens nothing - pass container explicitly to override. Reuse only sees the ACTIVE Zen workspace; a matching tab in another workspace is invisible and a new tab is opened. Stays in the background unless active=true.",
+        "Preferred way to reach a URL. Routes it to the container that owns the domain (rules in the container route table, see container_routes), then goes to the tab already open on that host in that container instead of stacking up duplicates - focusing it if it is already at that URL, otherwise navigating it. Opens a new tab in the right container only when no such tab is visible. Route rules outrank the session default container, so a project's URL lands in that project's cookie jar from any zen-* server. On a configured console host (a shared multi-project host like a search console), routing needs the URL to name a container's domain or alias; when it names none this errors and opens nothing - pass container explicitly to override. Reuse prefers a tab in the ACTIVE Zen workspace and then looks in the other workspaces: a logged-in tab sitting in another workspace is reused in place (reads and DOM tools reach it by tabId) rather than a fresh tab landing on a login page. Stays in the background unless active=true, which on an other-workspace tab makes Zen switch to it.",
       inputSchema: {
         url: z.string().describe("Target URL"),
         container: z
@@ -728,42 +783,62 @@ export function registerTools(
         if (decision.warning) tail.push(decision.warning);
 
         if (mode !== "never" && target) {
-          const pages = await listPages(daemon);
-          const candidates = pages.filter(
+          const inContainer = (await listPages(daemon, true)).filter(
             (p) => p.cookieStoreId === store && sameHostAndPort(effectivePageUrl(p), target),
           );
-          const exact = candidates.find((p) => canonicalUrl(effectivePageUrl(p)) === canonicalUrl(url));
-          if (exact) {
-            if (active) await daemon.call(Methods.PagesSelect, { tabId: exact.tabId });
-            const shown = effectivePageUrl(exact);
-            tail.push(
-              `reuse: already open at this URL${shown !== exact.url ? " (still loading)" : ""}${active ? " - focused it" : " - left in the background"}. Address it with tabId=${exact.tabId}.`,
-            );
-            return withNavMeta(
-              ok([`found tabId=${exact.tabId} -> ${shown} (${exact.containerName ?? "no container"})`, ...tail].join("\n")),
-              { url: shown },
-            );
-          }
-          // Prefer the tab already in front; otherwise the first in (windowId, index) order,
-          // so the choice is deterministic across calls.
-          const pick = candidates.find((p) => p.active) ?? candidates[0];
-          if (pick && mode === "host") {
-            const was = effectivePageUrl(pick);
-            await daemon.call(Methods.PagesNavigate, { tabId: pick.tabId, url });
-            rememberPendingUrl(pick.tabId, url);
-            if (active) await daemon.call(Methods.PagesSelect, { tabId: pick.tabId });
-            tail.push(
-              `reuse: navigated the open ${target.host} tab in this container (${candidates.length} matched; was ${was})`,
-            );
-            return withNavMeta(
-              ok([`reused tabId=${pick.tabId} -> ${url} (${pick.containerName ?? "no container"})`, ...tail].join("\n")),
-              { url, navigated: true },
-            );
+          // Two tiers, visible workspace first: a tab in the active workspace always wins over
+          // one in another workspace, and the transcript says which tier answered.
+          const tiers = [
+            { candidates: inContainer.filter(isVisible), hidden: false },
+            { candidates: inContainer.filter((p) => !isVisible(p)), hidden: true },
+          ];
+          for (const { candidates, hidden } of tiers) {
+            if (candidates.length === 0) continue;
+            const where = hidden ? " [in another Zen workspace]" : "";
+            const exact = candidates.find((p) => canonicalUrl(effectivePageUrl(p)) === canonicalUrl(url));
+            if (exact) {
+              if (active) await daemon.call(Methods.PagesSelect, { tabId: exact.tabId });
+              const shown = effectivePageUrl(exact);
+              const loading = shown !== exact.url ? " (still loading)" : "";
+              const outcome = active
+                ? hidden
+                  ? " - focused it (Zen switched workspace)"
+                  : " - focused it"
+                : hidden
+                  ? " - left in place; reads and DOM tools reach it by tabId, select_page or active=true switches to it"
+                  : " - left in the background";
+              tail.push(
+                `reuse: already open at this URL${loading}${hidden ? " in another Zen workspace" : ""}${outcome}. Address it with tabId=${exact.tabId}.`,
+              );
+              if (hidden && exact.discarded && !active) {
+                tail.push("note: that tab is unloaded; navigate_page or select_page reloads it before DOM tools can work.");
+              }
+              return withNavMeta(
+                ok([`found tabId=${exact.tabId} -> ${shown} (${exact.containerName ?? "no container"})${where}`, ...tail].join("\n")),
+                { url: shown },
+              );
+            }
+            // Prefer the tab already in front; otherwise the first in (windowId, index) order,
+            // so the choice is deterministic across calls.
+            const pick = candidates.find((p) => p.active) ?? candidates[0];
+            if (pick && mode === "host") {
+              const was = effectivePageUrl(pick);
+              await daemon.call(Methods.PagesNavigate, { tabId: pick.tabId, url });
+              rememberPendingUrl(pick.tabId, url);
+              if (active) await daemon.call(Methods.PagesSelect, { tabId: pick.tabId });
+              tail.push(
+                `reuse: navigated the open ${target.host} tab in this container${hidden ? " in another Zen workspace" : ""} (${candidates.length} matched; was ${was})${active && hidden ? " and focused it (Zen switched workspace)" : ""}`,
+              );
+              return withNavMeta(
+                ok([`reused tabId=${pick.tabId} -> ${url} (${pick.containerName ?? "no container"})${where}`, ...tail].join("\n")),
+                { url, navigated: true },
+              );
+            }
           }
           tail.push(
             mode === "exact"
-              ? `reuse: no tab at that exact URL in this container (${candidates.length} on ${target.host}) - opened a new one.`
-              : `reuse: no tab on ${target.host} in this container in the active Zen workspace - opened a new one.`,
+              ? `reuse: no tab at that exact URL in this container in any Zen workspace (${inContainer.length} on ${target.host}) - opened a new one.`
+              : `reuse: no tab on ${target.host} in this container in any Zen workspace - opened a new one.`,
           );
         }
 
@@ -856,7 +931,7 @@ export function registerTools(
     {
       title: "Select page",
       description:
-        "Focus a tab. Provide exactly one of: tabId (durable handle from list_pages), pageIdx (positional), url (substring match), title (substring match). Errors if multiple match for url/title - pass container to disambiguate between the same site open in several containers. Matching by url is the way back to a tab whose tabId is no longer visible after a Zen workspace switch.",
+        "Focus a tab. Provide exactly one of: tabId (durable handle from list_pages), pageIdx (positional), url (substring match), title (substring match). Errors if multiple match for url/title - pass container to disambiguate between the same site open in several containers. Tabs in other Zen workspaces are searched too, by tabId, url and title; selecting one makes Zen switch to that workspace, which is the one deliberate way to move the browser there.",
       inputSchema: {
         pageIdx: z.number().int().nonnegative().optional().describe(PAGE_IDX_DESC),
         tabId: z.number().int().optional().describe(TAB_ID_DESC),
@@ -875,16 +950,18 @@ export function registerTools(
         if ((typeof pageIdx === "number" ? 1 : 0) + (typeof tabId === "number" ? 1 : 0) > 1) {
           throw new ZenToolError("BAD_INPUT", "provide exactly one of pageIdx or tabId, not both");
         }
-        const pages = await listPages(daemon);
+        const pages = await listPages(daemon, true);
+        const visible = pages.filter(isVisible);
         // tabId and pageIdx address a tab directly, so the container filter only narrows the
-        // ambiguous substring searches.
+        // ambiguous substring searches. Those search every workspace: select is the tool that
+        // deliberately moves the browser, so an other-workspace match is a valid answer.
         const searchable = container
           ? pages.filter((p) => matchesContainerFilter(p, container))
           : pages;
         const inContainer = container ? ` in container "${container}"` : "";
-        const target = ((): PageInfo => {
-          if (typeof tabId === "number") return pageByTabId(pages, tabId);
-          if (typeof pageIdx === "number") return pageByIdx(pages, pageIdx);
+        const target = await (async (): Promise<PageInfo> => {
+          if (typeof tabId === "number") return findTabById(daemon, visible, tabId);
+          if (typeof pageIdx === "number") return pageByIdx(visible, pageIdx);
           if (url) {
             const matches = searchable.filter((p) => p.url.includes(url));
             if (matches.length === 0) throw new Error(`no page matches url substring "${url}"${inContainer}`);
@@ -908,7 +985,8 @@ export function registerTools(
           throw new ZenToolError("BAD_INPUT", "provide one of: tabId, pageIdx, url, title");
         })();
         await daemon.call(Methods.PagesSelect, { tabId: target.tabId });
-        return withNavMeta(ok(`selected tabId=${target.tabId} ${target.url}`), { url: target.url });
+        const switched = isVisible(target) ? "" : " (was in another Zen workspace - Zen switched to it)";
+        return withNavMeta(ok(`selected tabId=${target.tabId} ${target.url}${switched}`), { url: target.url });
       } catch (err) {
         return fail(err);
       }
@@ -1536,11 +1614,13 @@ export function registerTools(
             lastObserved = matched ? "present" : "absent";
           } else if (condition === "url") {
             const tabs = await daemon.call<PagesListResult>(Methods.PagesList);
-            const tab = tabs.pages.find((p) => p.tabId === targetTabId);
-            // The tab going missing mid-wait means it left the visible set (workspace
-            // switch or close). Say so instead of polling a vanished tab until timeout.
-            if (!tab) pageByTabId(sortedPages(tabs.pages), targetTabId);
-            const url = tab?.url ?? "";
+            // A tab that left the visible set mid-wait is either in another Zen workspace
+            // (still reachable by id) or closed (findTabById errors instead of polling a
+            // vanished tab until timeout).
+            const tab =
+              tabs.pages.find((p) => p.tabId === targetTabId) ??
+              (await findTabById(daemon, sortedPages(tabs.pages), targetTabId));
+            const url = tab.url;
             matched = re ? re.test(url) : url.includes(urlPattern as string);
             lastObserved = `url=${url.slice(0, 80)}`;
           } else {

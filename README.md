@@ -53,13 +53,13 @@ Every per-tab tool accepts **either** `tabId` (durable) or `pageIdx` (positional
 
 **Prefer `tabId`.** `pageIdx` is a position in the currently visible tab list, so it is only valid for as long as that list is unchanged.
 
-> ⚠️ **Zen Workspaces caveat.** Zen scopes `browser.tabs.query({})` to the **active workspace**. Tabs in other workspaces are *absent from the WebExtension API entirely* — not hidden-but-listed. So switching workspaces mid-session re-points every `pageIdx` at a different tab, and no error is raised: the operation just lands somewhere else. With `tabId` the same switch produces a loud `NOT_FOUND` ("tabId N not found in the active workspace — it may be in another Zen workspace") and nothing is sent to the browser.
+> ⚠️ **Zen Workspaces caveat.** Zen builds the tab list from the **active workspace's** strip only, so `browser.tabs.query({})` never enumerates tabs in other workspaces — they are not hidden-but-listed, they are simply not in the list. Switching workspaces mid-session therefore re-points every `pageIdx` at a different tab, and no error is raised: the operation just lands somewhere else.
 >
-> Recovery is deliberate, not automatic: switch back to the workspace holding the tab, or re-resolve it with `select_page({ url: "substring" })`. Nothing silently reaches across workspaces, because reaching into the wrong workspace is the bug itself.
+> A `tabId` is different: it is an identity, and Zen's id map is *not* workspace-scoped. Since extension 0.0.18 a tab in another workspace is resolved by id (`pages.get`) and every id-addressed tool reaches it **in place** — reads, DOM actions, screenshots, navigation — without switching your workspace. `list_pages({ includeHidden: true })` enumerates those tabs after the visible set, marked `[-]` (no position). Only a tab that exists in *no* workspace errors (`NOT_FOUND … the tab was closed`). Moving the browser there is still deliberate: `select_page` on such a tab, or `open_url(..., active: true)`, makes Zen switch to its workspace and says so.
 
 Optional guard for `pageIdx` callers: pass `expectTabSet` with the fingerprint from the `list_pages` header. If the visible set changed at all (tab opened, closed, or workspace switched), the call fails with `STALE` **without acting**.
 
-`get_firefox_info` reports `tabs.visible` and `tabs.fingerprint` for the active workspace. It reports no workspace id because **Zen exposes none to WebExtensions** — the fingerprint is the only available signal, and while it always changes on a workspace switch, it also changes on any ordinary tab open/close.
+`get_firefox_info` reports `tabs.visible` and `tabs.fingerprint` for the active workspace. It reports no workspace id because **Zen exposes none to WebExtensions** — the fingerprint is the only available signal, and while it always changes on a workspace switch, it also changes on any ordinary tab open/close. The same gap is why hidden tabs are flagged "other workspace" rather than named: the workspace a tab belongs to is a Zen-internal tab attribute the API never surfaces.
 
 ### Container routing: let the domain pick the container
 
@@ -111,7 +111,7 @@ new page tabId=1226 -> https://artistadvisory.io/artists (Artist Advisory)
 container: Artist Advisory (firefox-container-8) via route "artistadvisory.io" in ~/.config/zen-mcp/containers.json
 ```
 
-`open_url` is the tool that uses this end to end: it resolves the container, then **goes to the tab already open on that host in that container** — focusing it if it is already at that URL, otherwise navigating it — and opens a new tab only when there is none. Reuse is `reuse: "host"` by default; `"exact"` reuses only a tab already at that URL, `"never"` always opens. Like `new_page`, it stays in the background unless `active: true`.
+`open_url` is the tool that uses this end to end: it resolves the container, then **goes to the tab already open on that host in that container** — focusing it if it is already at that URL, otherwise navigating it — and opens a new tab only when there is none. Reuse looks in the active Zen workspace first and then in the other workspaces, so a logged-in tab sitting in another workspace is reused in place (and reported as `[in another Zen workspace]`) instead of a fresh tab landing on a login page. Reuse is `reuse: "host"` by default; `"exact"` reuses only a tab already at that URL, `"never"` always opens. Like `new_page`, it stays in the background unless `active: true`.
 
 Two limits worth knowing. Reuse only sees the **active Zen workspace**, so a matching tab in another workspace is invisible and a new tab is opened. And a tab **cannot change container** — `navigate_page` therefore says so when the URL you are loading is mapped elsewhere, rather than pretending it fixed it.
 
@@ -127,7 +127,7 @@ Fidelity gaps to know:
 - Large textual responses from `take_snapshot`, `evaluate_script`, `get_page_text`, `read_page`, `get_cookies`, and `get_storage` honor `maxBytes` + `cursor`.
 - Locator actions (`click`, `hover`, `fill`, `type`, `drag`, `select_option`, `press_key`) auto-wait for matches with `timeoutMs` and scroll targets into view before acting.
 
-Focus behavior: automation is non-disruptive by default. `new_page` / `new_page_in_container` open tabs in the **background** (pass `active: true` to foreground), `navigate_page` and the DOM tools act on a tab by id without activating it, and `screenshot_page` captures without focus. The only tools that surface a tab to the foreground are `select_page` and an explicit `new_page(..., active: true)`. This means an MCP entry can drive one container (e.g. `zen-cxv`) while you browse in another (e.g. `zen-personal`) without your focus being stolen.
+Focus behavior: automation is non-disruptive by default. `new_page` / `new_page_in_container` open tabs in the **background** (pass `active: true` to foreground), `navigate_page` and the DOM tools act on a tab by id without activating it, and `screenshot_page` captures without focus. The only tools that surface a tab to the foreground are `select_page` and an explicit `active: true` on `new_page` / `open_url` — and when the tab lives in another Zen workspace, those are also the only tools that make Zen switch workspaces. This means an MCP entry can drive one container (e.g. `zen-cxv`) while you browse in another (e.g. `zen-personal`) without your focus being stolen.
 
 ## Requirements
 

@@ -5,7 +5,9 @@
 // in that visible list, switching workspaces mid-session silently re-points every index at
 // a different tab and nothing errors. These tests drive the real MCP server over stdio
 // against a stub extension whose visible tab set can be swapped, and assert that a tabId
-// that has left the visible set FAILS instead of landing on an unrelated tab.
+// that has left the visible set is reached by IDENTITY (the tab still exists, in another
+// workspace, and every id-addressed RPC resolves it there), that a tabId that exists nowhere
+// FAILS instead of landing on an unrelated tab, and that pageIdx stays guarded.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -27,7 +29,9 @@ const WORKSPACE_A = [
   page({ tabId: 101, index: 0, url: "https://example.com/a", title: "A", active: true }),
   page({ tabId: 202, index: 1, url: "https://example.com/target", title: "Target" }),
 ];
-// Workspace B: a different tab now occupies index 1. tabId 202 is simply gone from the API.
+// Workspace B: a different tab now occupies index 1. tabId 202 is gone from the QUERY, but
+// the extension still resolves it by id (pages.get / includeHidden) - that is the real
+// Zen behavior: gBrowser.tabs is rebuilt from the active space's strip, the id map is not.
 const WORKSPACE_B = [
   page({ tabId: 301, index: 0, url: "https://search.google.com/search-console", title: "GSC", active: true }),
   page({ tabId: 302, index: 1, url: "https://search.google.com/search-console/clients", title: "GSC client" }),
@@ -52,6 +56,18 @@ class StubExtension {
     this.token = token;
     this.tabs = WORKSPACE_A;
     this.requests = [];
+    // Simulates an extension too old to answer pages.get (0.0.17 and earlier).
+    this.supportsGet = true;
+  }
+
+  /** Every tab in every workspace - what the id map holds. */
+  get everyTab() {
+    return [...WORKSPACE_A, ...WORKSPACE_B];
+  }
+
+  flagged(tab) {
+    const visible = this.tabs.some((t) => t.tabId === tab.tabId);
+    return { ...tab, inActiveWorkspace: visible };
   }
 
   setVisibleTabs(tabs) {
@@ -85,8 +101,18 @@ class StubExtension {
 
   handle(msg) {
     switch (msg.method) {
-      case "pages.list":
-        return { result: { pages: this.tabs } };
+      case "pages.list": {
+        if (!msg.params?.includeHidden) return { result: { pages: this.tabs } };
+        const hidden = this.everyTab
+          .filter((t) => !this.tabs.some((v) => v.tabId === t.tabId))
+          .map((t) => this.flagged(t));
+        return { result: { pages: [...this.tabs, ...hidden] } };
+      }
+      case "pages.get": {
+        if (!this.supportsGet) return { error: { code: -32601, message: "unknown method: pages.get" } };
+        const found = this.everyTab.find((t) => t.tabId === msg.params?.tabId);
+        return { result: { page: found ? this.flagged(found) : null } };
+      }
       case "pages.navigate":
       case "pages.select":
       case "pages.close":
@@ -247,25 +273,88 @@ test("tabId addresses the intended tab while it is visible", async () => {
   assert.equal(last.params.tabId, 202);
 });
 
-test("a tabId that left the visible workspace errors instead of acting", async () => {
-  // The bug: after a workspace switch the captured tab is not merely hidden, it is absent
-  // from the WebExtension API. Addressing it must fail loudly and touch nothing.
+test("a tabId that left the visible workspace is still reached by identity, in place", async () => {
+  // After a workspace switch the captured tab is absent from the query but not from the
+  // browser. A tabId is an identity, so the tool resolves it via pages.get and acts on THAT
+  // tab - never on whatever now sits at its old position.
+  ext.supportsGet = true;
+  ext.setVisibleTabs(WORKSPACE_B);
+
+  const { isError, text } = await mcp.callTool("navigate_page", {
+    tabId: 202,
+    url: "https://example.com/target-3",
+  });
+
+  assert.equal(isError, false, text);
+  assert.match(text, /tabId=202/);
+  assert.equal(ext.requestsFor("pages.navigate").at(-1).params.tabId, 202);
+  assert.equal(
+    ext.requestsFor("pages.navigate").filter((r) => r.params.tabId === 302).length,
+    0,
+    "the tab now occupying index 1 must never be touched",
+  );
+});
+
+test("a tabId that exists in no workspace errors instead of acting", async () => {
   ext.setVisibleTabs(WORKSPACE_B);
   const before = ext.requestsFor("pages.navigate").length;
 
   const { isError, text } = await mcp.callTool("navigate_page", {
-    tabId: 202,
+    tabId: 999,
     url: "https://example.com/should-not-happen",
   });
 
   assert.equal(isError, true, "expected an error, not a silent retarget");
-  assert.match(text, /tabId 202 not found in the active workspace/);
-  assert.match(text, /another Zen workspace/);
+  assert.match(text, /tabId 999 not found in any Zen workspace/);
+  assert.match(text, /Nothing was done/);
   assert.equal(
     ext.requestsFor("pages.navigate").length,
     before,
     "no navigation may reach the browser when the target tab is gone",
   );
+});
+
+test("an extension without pages.get keeps the old loud failure", async () => {
+  ext.supportsGet = false;
+  ext.setVisibleTabs(WORKSPACE_B);
+  const before = ext.requestsFor("pages.navigate").length;
+  try {
+    const { isError, text } = await mcp.callTool("navigate_page", {
+      tabId: 202,
+      url: "https://example.com/should-not-happen",
+    });
+    assert.equal(isError, true);
+    assert.match(text, /tabId 202 not found in the active workspace/);
+    assert.match(text, /too old/);
+    assert.equal(ext.requestsFor("pages.navigate").length, before);
+  } finally {
+    ext.supportsGet = true;
+  }
+});
+
+test("list_pages hides other workspaces by default and lists them positionless on request", async () => {
+  ext.setVisibleTabs(WORKSPACE_A);
+  const plain = await mcp.callTool("list_pages");
+  assert.equal(plain.isError, false);
+  assert.doesNotMatch(plain.text, /tabId=301/);
+
+  const withHidden = await mcp.callTool("list_pages", { includeHidden: true });
+  assert.equal(withHidden.isError, false, withHidden.text);
+  assert.match(withHidden.text, /2 tabs visible in the active Zen workspace/);
+  assert.match(withHidden.text, /2 more tabs in other Zen workspaces/);
+  assert.match(withHidden.text, /\[-\] tabId=301 /);
+  assert.doesNotMatch(withHidden.text, /\[\d+\] tabId=301/, "hidden tabs get no position");
+  const fp = (t) => /tabSet=([0-9a-f]{8})/.exec(t)[1];
+  assert.equal(fp(withHidden.text), fp(plain.text), "the fingerprint describes the visible set only");
+});
+
+test("select_page finds a tab in another workspace by url and switches to it", async () => {
+  ext.setVisibleTabs(WORKSPACE_A);
+  const { isError, text } = await mcp.callTool("select_page", { url: "search-console/clients" });
+  assert.equal(isError, false, text);
+  assert.match(text, /selected tabId=302 /);
+  assert.match(text, /Zen switched to it/);
+  assert.equal(ext.requestsFor("pages.select").at(-1).params.tabId, 302);
 });
 
 test("every pageIdx-addressed tool inherits the same tabId guard", async () => {
@@ -284,15 +373,15 @@ test("every pageIdx-addressed tool inherits the same tabId guard", async () => {
     ["wait_for", { condition: "selector_visible", selector: "css:#go", timeout: 1000 }],
   ];
   for (const [name, args] of cases) {
-    const { isError, text } = await mcp.callTool(name, { tabId: 202, ...args });
-    assert.equal(isError, true, `${name} should reject a tabId outside the active workspace`);
-    assert.match(text, /tabId 202 not found in the active workspace/, `${name}: ${text}`);
+    const { isError, text } = await mcp.callTool(name, { tabId: 999, ...args });
+    assert.equal(isError, true, `${name} should reject a tabId that exists in no workspace`);
+    assert.match(text, /tabId 999 not found in any Zen workspace/, `${name}: ${text}`);
   }
-  // Nothing above should have reached the browser for the missing tab.
+  // Nothing above should have reached the browser for the missing tab - only the lookup.
   assert.equal(
-    ext.requests.slice(mark).filter((r) => r.params?.tabId === 202).length,
+    ext.requests.slice(mark).filter((r) => r.params?.tabId === 999 && r.method !== "pages.get").length,
     0,
-    "no RPC may be issued against a tab that is not in the visible set",
+    "no RPC may be issued against a tab that exists nowhere",
   );
 });
 

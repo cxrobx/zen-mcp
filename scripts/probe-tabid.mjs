@@ -115,11 +115,11 @@ async function main() {
     /tab set changed/,
   );
 
-  console.log("\n--- tabId outside the visible set must fail loudly ---");
+  console.log("\n--- tabId that exists in no workspace must fail loudly ---");
   expectError(
     "get_page_text with an absent tabId",
     await mcp.callTool("get_page_text", { tabId: 999999999 }),
-    /not found in the active workspace/,
+    /not found in (the active|any Zen) workspace/,
   );
 
   console.log("\n--- mutually exclusive params ---");
@@ -143,8 +143,8 @@ async function main() {
   console.log("\n[probe-tabid] PASS");
   console.log(
     "\nManual workspace check (optional): note a tabId in workspace A, switch Zen to\n" +
-      "workspace B, then re-run a tool with that tabId. Expect the same NOT_FOUND error\n" +
-      "as above rather than a silent hit on whatever tab now sits at that index.",
+      "workspace B, then re-run a tool with that tabId. Expect it to act on THAT tab in\n" +
+      "place (see scripts/probe-hidden.mjs), never on whatever now sits at its old index.",
   );
   server.kill("SIGTERM");
   await sleep(200);

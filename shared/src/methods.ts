@@ -1,6 +1,7 @@
 export const Methods = {
   ContainersList: "containers.list",
   PagesList: "pages.list",
+  PagesGet: "pages.get",
   PagesNew: "pages.new",
   PagesNavigate: "pages.navigate",
   PagesSelect: "pages.select",
@@ -62,10 +63,36 @@ export interface PageInfo {
   active: boolean;
   cookieStoreId: string;
   containerName: string | null;
+  /**
+   * False when the tab lives in a Zen workspace other than the active one. Such a tab is
+   * absent from browser.tabs.query() but still reachable by tabId (tabs.get, scripting,
+   * captureTab, tabs.update all resolve ids without a workspace filter). Absent means true:
+   * an older extension only ever reports the active workspace.
+   */
+  inActiveWorkspace?: boolean;
+  /** True when the tab is unloaded (discarded); DOM tools need a navigate/select first. */
+  discarded?: boolean;
+}
+
+export interface PagesListParams {
+  /**
+   * Also enumerate tabs in other Zen workspaces. They are found by probing tab ids, not by
+   * query, and come back flagged inActiveWorkspace: false with a stale index.
+   */
+  includeHidden?: boolean;
 }
 
 export interface PagesListResult {
   pages: PageInfo[];
+}
+
+export interface GetPageParams {
+  tabId: number;
+}
+
+/** page is null when no tab with that id exists in any workspace. */
+export interface GetPageResult {
+  page: PageInfo | null;
 }
 
 export interface NewPageParams {

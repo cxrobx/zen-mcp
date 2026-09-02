@@ -74,6 +74,8 @@ class StubExtension {
     this.url = url;
     this.token = token;
     this.tabs = TABS();
+    // Tabs in OTHER Zen workspaces: absent from the plain list, reachable by id.
+    this.hiddenTabs = [];
     this.requests = [];
     this.nextTabId = 500;
     // Firefox reports a brand-new tab as about:blank until its first navigation commits.
@@ -83,6 +85,7 @@ class StubExtension {
 
   reset() {
     this.tabs = TABS();
+    this.hiddenTabs = [];
     this.requests = [];
     this.deferLoads = false;
   }
@@ -121,8 +124,17 @@ class StubExtension {
     switch (msg.method) {
       case "containers.list":
         return { result: { containers: CONTAINERS } };
-      case "pages.list":
-        return { result: { pages: this.tabs } };
+      case "pages.list": {
+        if (!msg.params?.includeHidden) return { result: { pages: this.tabs } };
+        const hidden = this.hiddenTabs.map((t) => ({ ...t, inActiveWorkspace: false }));
+        return { result: { pages: [...this.tabs, ...hidden] } };
+      }
+      case "pages.get": {
+        const shown = this.tabs.find((t) => t.tabId === msg.params?.tabId);
+        if (shown) return { result: { page: shown } };
+        const hidden = this.hiddenTabs.find((t) => t.tabId === msg.params?.tabId);
+        return { result: { page: hidden ? { ...hidden, inActiveWorkspace: false } : null } };
+      }
       case "pages.new": {
         const store = msg.params?.cookieStoreId ?? "firefox-default";
         const container = CONTAINERS.find((c) => c.cookieStoreId === store);
@@ -148,9 +160,9 @@ class StubExtension {
         };
       }
       case "pages.navigate": {
-        this.tabs = this.tabs.map((t) =>
-          t.tabId === msg.params.tabId ? { ...t, url: msg.params.url } : t,
-        );
+        const nav = (t) => (t.tabId === msg.params.tabId ? { ...t, url: msg.params.url } : t);
+        this.tabs = this.tabs.map(nav);
+        this.hiddenTabs = this.hiddenTabs.map(nav);
         return { result: { tabId: msg.params.tabId } };
       }
       case "pages.select":
@@ -681,6 +693,79 @@ test("open_url on a URL already open just reports the tab and navigates nothing"
   assert.equal(ext.requestsFor("pages.navigate").length, navs);
   assert.equal(ext.requestsFor("pages.new").length, news);
   assert.equal(ext.requestsFor("pages.select").length, selects, "background by default");
+});
+
+// --- other Zen workspaces --------------------------------------------------------------------
+// The 2026-09-02 incident: a logged-in resend.com tab sat in the Artist Advisory container
+// but in another workspace; open_url could not see it and opened a fresh tab that landed on
+// the login page. Reuse now looks in the other workspaces after the visible one.
+
+test("open_url reuses a logged-in tab in another workspace instead of opening a login page", async () => {
+  ext.reset();
+  ext.hiddenTabs = [
+    page({ tabId: 597, index: 0, url: "https://artistadvisory.io/settings", title: "Settings", container: "Artist Advisory" }),
+  ];
+  const news = ext.requestsFor("pages.new").length;
+  const selects = ext.requestsFor("pages.select").length;
+
+  const { isError, text } = await mcp.callTool("open_url", {
+    url: "https://artistadvisory.io/settings",
+    reuse: "exact",
+  });
+
+  assert.equal(isError, false, text);
+  assert.match(text, /^found tabId=597 .*\[in another Zen workspace\]/);
+  assert.match(text, /already open at this URL in another Zen workspace - left in place/);
+  assert.equal(ext.requestsFor("pages.new").length, news, "no login-page tab may be opened");
+  assert.equal(ext.requestsFor("pages.select").length, selects, "background: no workspace switch");
+
+  const focused = await mcp.callTool("open_url", {
+    url: "https://artistadvisory.io/settings",
+    reuse: "exact",
+    active: true,
+  });
+  assert.equal(focused.isError, false, focused.text);
+  assert.match(focused.text, /Zen switched workspace/);
+  assert.equal(ext.requestsFor("pages.select").at(-1).params.tabId, 597);
+});
+
+test("open_url navigates an other-workspace host tab in place when the active workspace has none", async () => {
+  ext.reset();
+  ext.hiddenTabs = [
+    page({ tabId: 598, index: 0, url: "https://buildersbuddy.org/deals", title: "Deals", container: "Buildersbuddy" }),
+  ];
+  const news = ext.requestsFor("pages.new").length;
+
+  const { isError, text } = await mcp.callTool("open_url", { url: "https://buildersbuddy.org/deals/new" });
+
+  assert.equal(isError, false, text);
+  assert.match(text, /^reused tabId=598 .*\[in another Zen workspace\]/);
+  assert.match(text, /in another Zen workspace \(1 matched; was https:\/\/buildersbuddy\.org\/deals\)/);
+  assert.equal(ext.requestsFor("pages.navigate").at(-1).params.tabId, 598);
+  assert.equal(ext.requestsFor("pages.new").length, news);
+});
+
+test("a tab in the active workspace always outranks one in another workspace", async () => {
+  ext.reset();
+  ext.hiddenTabs = [
+    page({ tabId: 599, index: 0, url: "https://artistadvisory.io/marketing", title: "Exact", container: "Artist Advisory" }),
+  ];
+  const { isError, text } = await mcp.callTool("open_url", { url: "https://artistadvisory.io/marketing" });
+  assert.equal(isError, false, text);
+  assert.match(text, /^reused tabId=101 /, "host mode: the visible tab is navigated, the hidden exact match is not consulted");
+  assert.equal(ext.requestsFor("pages.navigate").filter((r) => r.params.tabId === 599).length, 0);
+});
+
+test("wrong-container tabs in other workspaces are never reused either", async () => {
+  ext.reset();
+  ext.hiddenTabs = [
+    page({ tabId: 600, index: 0, url: "https://cxventures.io/proposals", title: "Wrong jar", container: "Personal" }),
+  ];
+  const { isError, text } = await mcp.callTool("open_url", { url: "https://cxventures.io/proposals" });
+  assert.equal(isError, false, text);
+  assert.match(text, /^new page tabId=\d+ /);
+  assert.match(text, /in any Zen workspace - opened a new one/);
+  assert.equal(ext.requestsFor("pages.navigate").filter((r) => r.params.tabId === 600).length, 0);
 });
 
 test("active=true focuses the tab it landed on", async () => {
