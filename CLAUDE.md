@@ -32,7 +32,7 @@ Claude Code  --stdio-->  MCP server (per session, --container-scoped)
 ## Daily-driver state (already set up)
 
 - Daemon: launchd `~/Library/LaunchAgents/io.cxrobx.zen-mcp.daemon.plist` → `/usr/local/bin/node` runs `daemon/dist/index.js --port 8766`. Logs at `~/Library/Logs/zen-mcp/daemon.{out,err}.log`.
-- Extension: signed via AMO unlisted, gecko id `zen-ext-mcp@cxrobx` (**deliberately NOT renamed** — a new id means a new AMO listing and a reinstall that wipes `browser.storage.local`), currently 0.0.17. Settings (URL + token) live in `browser.storage.local`; snapshot UID maps live in `browser.storage.session`.
+- Extension: signed via AMO unlisted, gecko id `zen-ext-mcp@cxrobx` (**deliberately NOT renamed** — a new id means a new AMO listing and a reinstall that wipes `browser.storage.local`), currently 0.0.18 (installed and live-verified 2026-09-07). Settings (URL + token) live in `browser.storage.local`; snapshot UID maps live in `browser.storage.session`.
 - Auth token: `~/.config/zen-mcp/auth.token` (mode 0600, 32-byte hex). Daemon generates on first launch.
 - AMO signing creds: `~/.config/zen-mcp/.env` (mode 0600, `AMO_KEY` + `AMO_SECRET`). Sourced by `extension/scripts/sign.sh`; `npm run extension:sign` works with no inline env. Get fresh keys at https://addons.mozilla.org/developers/addon/api/key/.
 - 7 MCP entries at user scope (`~/.claude.json`): `zen-ext`, `zen-cxv`, `zen-personal`, `zen-geek`, `zen-music`, `zen-buildersbuddy`, `zen-artist`.
@@ -93,6 +93,8 @@ For installation specifically: `open -a "/Applications/Zen.app" <xpi>` triggers 
 | `scripts/fill-secret.test.mjs` | `node --test` suite for `fill_secret`: value reaches the fill RPC but never the transcript (hostile echo scrubbed), unbound host / unknown name / Keychain miss all error without attempting a fill, malformed config fails loud. Stub extension + fake `security` binary, no browser, no real Keychain. `npm run test:fill-secret`. |
 | `scripts/probe-routes.mjs` | Live routing probe. Phase A resolves the REAL table read-only; phase B drives `open_url` against a throwaway `example.com` table and asserts every pre-existing tab is untouched. |
 | `scripts/check-space-sync.mjs` | Guards the space-placement conclusion below: asserts BOTH Zen placement mechanisms are off, and that every container still has exactly one space bound to it. `npm run check:spaces`. Read-only against the live Zen profile; readers + the mozlz4 decoder are in `scripts/lib/zen-profile.mjs`. No browser or daemon needed. |
+
+**Run the `node --test` suites under Node ≥ 22** (Chris's login shell resolves nvm's `lts/*` = 24). A non-login shell can fall through to the launchd `/usr/local/bin/node` v20.13, where the suites' top-level `before()` hook never runs — every test then fails with `Cannot read properties of undefined (reading 'setVisibleTabs')` and `container-routes.test.mjs` hangs. That is the Node version, not a regression; `PATH=$HOME/.nvm/versions/node/v24.11.1/bin:$PATH` in front of the command fixes it. Also never run two suites concurrently: each binds a fixed port (18767/18768/…) and a leftover daemon makes the next run fail with `unauthorized: invalid token`.
 
 For nav-memory work run `npm run test:nav-memory`, `node scripts/probe-navmem.mjs`, and the unchanged `node scripts/smoke.mjs`. The default ETL probe uses a fake tool-free Claude executable and fake Ollama endpoint; a live subscription is not a test prerequisite.
 
