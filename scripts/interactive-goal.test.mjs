@@ -8,8 +8,15 @@
 // runGoal (server/src/goal.ts) is the Jev loop. Every stop rule is a place where a wrong
 // click on a live, logged-in browser would otherwise happen, so each one is pinned here with
 // injected fakes: no browser, no daemon, no network.
+//
+// The Jev allowlist (server/src/jev.ts) is pinned here too: financial sites can never be
+// made eligible, by listing them or otherwise.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { isFinancialHost, loadJevConfig, requireJevHost } from "../server/dist/jev.js";
 import {
   INTERACTIVE_MAX_LIMIT,
   collectInteractive,
@@ -402,4 +409,46 @@ test("goal: a pick that was never offered is refused", async () => {
   assert.equal(r.outcome, "handback");
   assert.match(r.reason, /was not offered/);
   assert.equal(calls.click.length, 0);
+});
+
+// --- financial sites never go to TypeSafe ----------------------------------------------
+
+test("financial hosts match on registrable domain, subdomains included, lookalikes not", () => {
+  for (const host of [
+    "dashboard.stripe.com",
+    "app.mercury.com",
+    "dashboard.plaid.com",
+    "pocketbuddy.org",
+    "ehxr.fa.us2.oraclecloud.com",
+    "fa-evii-saasfaprod1.fa.ocs.oraclecloud.com",
+    "sam.gov",
+  ]) {
+    assert.equal(isFinancialHost(host), true, host);
+  }
+  for (const host of ["search.google.com", "app.hubspot.com", "notstripe.com"]) {
+    assert.equal(isFinancialHost(host), false, host);
+  }
+});
+
+test("listing a financial host makes the whole allowlist an error, not a partial list", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zen-jev-config-"));
+  const previous = process.env.ZEN_MCP_JEV_CONFIG;
+  try {
+    const file = join(dir, "jev.json");
+    writeFileSync(file, JSON.stringify({ hosts: ["search.google.com", "app.mercury.com"] }));
+    process.env.ZEN_MCP_JEV_CONFIG = file;
+    const config = loadJevConfig();
+    assert.match(config.error ?? "", /"app\.mercury\.com" is a financial site/);
+    assert.equal(config.hosts.size, 0);
+    assert.throws(() => requireJevHost(config, "search.google.com"), /malformed/);
+  } finally {
+    if (previous === undefined) delete process.env.ZEN_MCP_JEV_CONFIG;
+    else process.env.ZEN_MCP_JEV_CONFIG = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a financial host is refused even by a config that somehow contains it", () => {
+  const config = { path: "(test)", present: true, hosts: new Set(["dashboard.stripe.com"]), error: null };
+  assert.throws(() => requireJevHost(config, "dashboard.stripe.com"), /financial site - navigate_goal never sends financial data/);
 });

@@ -4,8 +4,8 @@
 //
 // What must hold, because navigate_goal sends page data OFF this machine and clicks in a
 // live, logged-in browser:
-//   - an unlisted host, an absent allowlist, or a malformed one sends NOTHING - not even a
-//     Keychain lookup for the key;
+//   - an unlisted host, a financial site, an absent allowlist, or a malformed one sends
+//     NOTHING - not even a Keychain lookup for the key;
 //   - the key reaches TypeSafe as a bearer token and never appears in a tool response, even
 //     when TypeSafe echoes it back in an error;
 //   - typed field values never reach TypeSafe;
@@ -103,6 +103,7 @@ const initialTabs = () => [
   { tabId: 301, windowId: 1, index: 0, url: HOME_URL, title: "Home", active: true, cookieStoreId: "firefox-default", containerName: null },
   { tabId: 302, windowId: 1, index: 1, url: "https://mail.example.com/inbox", title: "Inbox", active: false, cookieStoreId: "firefox-default", containerName: null },
   { tabId: 303, windowId: 1, index: 2, url: "https://dashboard.example.com/live", title: "Live", active: false, cookieStoreId: "firefox-default", containerName: null },
+  { tabId: 304, windowId: 1, index: 3, url: "https://dashboard.stripe.com/acct_1/payments", title: "Payments", active: false, cookieStoreId: "firefox-default", containerName: null },
 ];
 
 class StubExtension {
@@ -388,6 +389,17 @@ test("navigate_goal on an unlisted host sends nothing and never reads the key", 
   assert.equal(jev.requests.length, 0);
   assert.equal((await keychainLookups("with-key")).length, before, "Keychain was read for a refused host");
   assert.equal(ext.requestsFor("dom.click").length, 0);
+});
+
+test("navigate_goal on a financial site sends nothing and never reads the key", async () => {
+  resetWorld();
+  const before = (await keychainLookups("with-key")).length;
+  const r = await clients.main.callTool("navigate_goal", { tabId: 304, goal: "open the payouts page" });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /BAD_PERMS.*"dashboard\.stripe\.com" is a financial site/);
+  assert.equal(jev.requests.length, 0);
+  assert.equal((await keychainLookups("with-key")).length, before, "Keychain was read for a financial site");
+  assert.equal(ext.requestsFor("dom.takeSnapshot").length, 0, "a financial page was snapshotted for Jev");
 });
 
 test("navigate_goal with no allowlist file is not enabled, and sends nothing", async () => {

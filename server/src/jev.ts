@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { normalizeHost } from "@zen-mcp/shared/nav-redact";
+import { normalizeHost, registrableDomain } from "@zen-mcp/shared/nav-redact";
 import { ZenToolError } from "./errors.js";
 
 /**
@@ -23,6 +23,49 @@ export const JEV_MODEL = "jev-latest";
 const DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const RETRY_DELAY_MS = 600;
+
+/**
+ * Financial data never goes to TypeSafe (Chris's decision, 2026-09-16) - not "unless
+ * allowlisted", never. Matched on registrable domain so every subdomain is covered, and
+ * enforced twice: listing one makes the whole allowlist a loud error, and requireJevHost
+ * refuses one regardless. Extend this set; never add an override.
+ */
+export const FINANCIAL_DOMAINS: ReadonlySet<string> = new Set([
+  // Banking, payments and money movement Chris uses
+  "stripe.com",
+  "mercury.com",
+  "plaid.com",
+  // His personal-finance app (budgets, accounts, net worth)
+  "pocketbuddy.org",
+  // Oracle Fusion Financials supplier portals (tax ids, bank details)
+  "oraclecloud.com",
+  // Federal registrations carrying EFT banking details, and tax filing
+  "sam.gov",
+  "irs.gov",
+  "eftps.gov",
+  // Common rails and institutions, so an accidental listing fails closed
+  "paypal.com",
+  "wise.com",
+  "brex.com",
+  "ramp.com",
+  "gusto.com",
+  "intuit.com",
+  "coinbase.com",
+  "chase.com",
+  "bankofamerica.com",
+  "wellsfargo.com",
+  "capitalone.com",
+  "americanexpress.com",
+  "fidelity.com",
+  "schwab.com",
+  "vanguard.com",
+  "robinhood.com",
+]);
+
+export function isFinancialHost(host: string): boolean {
+  const domain = registrableDomain(host) ?? host;
+  return FINANCIAL_DOMAINS.has(domain);
+}
 
 export function jevConfigPath(): string {
   return process.env.ZEN_MCP_JEV_CONFIG ?? join(homedir(), ".config", "zen-mcp", "jev.json");
@@ -63,6 +106,14 @@ export function loadJevConfig(): JevConfig {
           error: `${JSON.stringify(entry)} is not a bare host (no scheme, path, port, or wildcard)`,
         };
       }
+      if (isFinancialHost(host)) {
+        return {
+          path,
+          present: true,
+          hosts: new Set(),
+          error: `"${host}" is a financial site, and financial data is never sent to TypeSafe - remove it`,
+        };
+      }
       hosts.add(host);
     }
     return { path, present: true, hosts, error: null };
@@ -72,6 +123,14 @@ export function loadJevConfig(): JevConfig {
 }
 
 export function requireJevHost(config: JevConfig, host: string | null): void {
+  // First, and independent of the file: no configuration can make a financial site eligible.
+  if (host && isFinancialHost(host)) {
+    throw new ZenToolError(
+      "BAD_PERMS",
+      `"${host}" is a financial site - navigate_goal never sends financial data to TypeSafe`,
+      "Nothing was sent. Drive this page directly with interactive_elements and click_by_uid instead.",
+    );
+  }
   if (config.error) {
     throw new ZenToolError(
       "BAD_INPUT",

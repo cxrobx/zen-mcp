@@ -132,7 +132,7 @@ It sends the goal, page title/path/headings and control labels (redacted for ema
 { "hosts": ["search.google.com"] }
 ```
 
-Exact hosts only. An absent file means "not enabled", a malformed one is an error, and an unlisted host sends nothing and never reads the key. The key is `TYPESAFE_API_KEY` in the login Keychain (`sk TYPESAFE_API_KEY`). Design, thresholds and measurements: [`docs/jev.md`](docs/jev.md).
+Exact hosts only. An absent file means "not enabled", a malformed one is an error, and an unlisted host sends nothing and never reads the key. **Financial sites are refused in code** (Stripe, Mercury, Plaid, PocketBuddy, Oracle Fusion, SAM.gov, banks and payment rails; see `FINANCIAL_DOMAINS` in `server/src/jev.ts`), and listing one makes the whole file an error. The key is `TYPESAFE_API_KEY` in the login Keychain (`sk TYPESAFE_API_KEY`). Design, thresholds and measurements: [`docs/jev.md`](docs/jev.md).
 
 Tools the Marionette-based predecessor had that have **no WebExtension equivalent**, and so are absent here by design: `list_privileged_contexts` / `select_privileged_context` / `evaluate_privileged_script`, `set_firefox_prefs` / `get_firefox_prefs`, `restart_firefox`, `upload_file_by_uid`, `install_extension` / `list_extensions` / `uninstall_extension`.
 

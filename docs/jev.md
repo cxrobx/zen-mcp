@@ -50,6 +50,7 @@ First live run: after clicking "Pages", `done` came back at **0.42**. The state 
 - A **fail-closed allowlist**: absent means off, malformed is an error, unlisted sends nothing and never reads the key.
 - **Redact** every page-derived string (`redactText`: emails, JWTs, UUIDs, keys, long digits).
 - **Withhold** what you don't need. The first live run sent `Google Account: <name> (<email>)` as a candidate. Off-host links are now withheld, and redaction backstops the rest.
+- **Some data never goes, whatever the config says.** Financial sites are blocked in code (`FINANCIAL_DOMAINS` in `server/src/jev.ts`, matched on registrable domain): listing one makes the whole allowlist an error, and the host check refuses one regardless. Chris's decision, 2026-09-16: financial data is not sent to TypeSafe. Extend the set; never add an override.
 
 **6. Inject every dependency; test the "sends nothing" paths hardest.**
 `runGoal(deps, options)` takes page/settle/elements/click/ask/allowHost as functions, so every stop rule has a unit test with fakes (`scripts/interactive-goal.test.mjs`). The end-to-end suite (`scripts/navigate-goal.test.mjs`) runs a fake TypeSafe HTTP server and a fake `security` that logs lookups, which is how "unlisted host never reads the key" is proven rather than assumed.
@@ -91,4 +92,4 @@ Good candidates are judgments over a bounded set: categorizing a transaction, ro
 
 ## Keep or kill
 
-Keep `navigate_goal` if it is at least **3× faster** than the Claude-driven path on three recurring reads, with **zero wrong clicks**. Search Console is measured; Stripe webhooks and HubSpot URL redirects are not, because those hosts aren't allowlisted. Adding them means their control labels leave the machine, so that's a deliberate decision, not a default. If it fails the test, `interactive_elements` and `stable` stand on their own; shelve `navigate_goal` and record why here.
+Keep `navigate_goal` if it is at least **3× faster** than the Claude-driven path on three recurring **non-financial** reads, with **zero wrong clicks**. Search Console is measured. Stripe is out permanently (financial). Bing Webmaster Tools is the natural second task, since it's the same kind of SEO console; the third should be chosen deliberately, because every allowlisted host's control labels leave the machine. If it fails the test, `interactive_elements` and `stable` stand on their own; shelve `navigate_goal` and record why here.
