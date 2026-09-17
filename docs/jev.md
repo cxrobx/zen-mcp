@@ -2,6 +2,8 @@
 
 Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`). An experiment with a written keep/kill test at the bottom.
 
+**Before proposing a second integration, read § *Where else — the survey and the verdict*. The answer as of 2026-09-17 is no, and the three tripwires that would change it are listed there. Don't re-derive it.**
+
 This is also the reference for adding TypeSafe's Jev to other projects. The zen-mcp specifics are examples of rules that travel.
 
 ## What Jev is
@@ -77,6 +79,45 @@ For comparison, nav-memory telemetry puts the median gap between Claude-driven s
 - **Pricing unchecked.** Tokens are reported per run; cost per token isn't known yet.
 - **Read-only by construction.** No typing, selecting, toggling or form flows, and that is not a gap to close here.
 
+## Where else — the survey and the verdict
+
+**Verdict, 2026-09-17: no second integration.** Jev is priced for a problem this shop doesn't have. Its whole pitch is cost *per decision*, and the marginal cost of a decision here is already **zero** — the decision layer runs on the Claude subscription (jobscan's haiku workers, aimedia's planner, every headless `claude -p`). "40–400× cheaper" is a comparison against a metered bill that doesn't exist; adding Jev doesn't remove a line item, it adds one. It also adds permanent harness surface — the fail-closed allowlist, `redactText`, the financial-domain block and the tests for all three — which exists because the first live run leaked an account email.
+
+Not "Jev is bad." **Jev is built for someone paying per decision at volume.** This shop pays per month, at low volume, against latency budgets measured in seconds.
+
+### Four filters that kill a candidate before the shape test
+
+1. **Text or JSON only** (~32k tokens, no images). Anything judged from a frame or a screenshot is out — aimedia's story checks read a scene's last frame; the iOS validator compares screenshots.
+2. **Quality is lateral at best.** 67.8% agreement in TypeSafe's own four-workflow eval — level with Sonnet 5, behind Opus 5 (73.1) and Sol (74.1). Only ever a swap where **haiku is already good enough**; never where Opus was the right call.
+3. **Cost only binds where the subscription doesn't reach.** See the verdict.
+4. **Latency needs a sub-2-second budget to matter.** 130–400 ms against ~3–5 s wins nothing under a 60-second SLA.
+
+### The survey
+
+| Candidate | The judgment | Why not now |
+|---|---|---|
+| **QES / LSA responder** | urgency × $value · service category · technician class · is the six-field intake complete | The shape is exact — this *is* the differentiator sold against Housecall Pro. But the budget is **60 s**, which haiku clears by 20×, and one contractor is not volume. **Correction to an earlier read here: "sub-60s is contractual, therefore binding" was wrong** — a constraint met 20× over is not a constraint |
+| **jobscan** | score a posting against the rubric | **The only live signal.** haiku workers tripped the Claude *session limit* — the one place the subscription stops being free, because the constraint turns into rate, not dollars. Still weak: 3 workers, a weekly sweep |
+| **PocketBuddy values alignment** | merchant ↔ a stated value | Genuine fan-out shape, already schema-gated — but single-user volume. Not the bottleneck |
+| **`navigate_goal`** | built | Let the keep/kill test below finish; don't expand the allowlist to feed it |
+
+The move on all of them is the same, and it doesn't need Jev: **decompose into named typed questions on haiku first.** The decision-native-models guide's own strongest finding is that *decomposition, not the model,* produced most of the measured gain — every comparison model got more accurate, faster and cheaper inside an explicit decomposed workflow. Do that and the Jev swap stays a one-line, reversible margin lever for later.
+
+### Looks like a fit, isn't
+
+- **aimedia story checks** — vision. Out by filter 1. (The Whisper line-vs-planned-line check is text on text and could go; it's a sliver.)
+- **CXMail triage** — one user. Nothing binds, and haiku is already fine.
+- **TeacherHero's coach** — full curriculum context is the moat, and the moat is generative.
+- **The `deny-secret-exposure` hook** — tempting as a `noul` ("does this command expose a credential?"). Hard no: it puts a network round trip in front of every Bash call, and a false negative leaks a key. A regex that fails **closed** beats a probability that is honest on average.
+
+### Tripwires — revisit only when one of these is true
+
+1. **A decision path gets a sub-2-second budget** — voice, a live UI gate, a real per-tick loop.
+2. **Subscription rate limits, not dollars, become the binding constraint** on a single workflow. Watch jobscan; it has already tripped once.
+3. **Per-decision cost is billed through to a client at volume** — the LSA line across *many* contractors, not one.
+
+None are true today. Until one is, the answer is no.
+
 ## Porting to another project
 
 1. Store the key once: `sk TYPESAFE_API_KEY`. Consume it with `secret run -k TYPESAFE_API_KEY -- <cmd>`; the Python SDK reads that env var by default. Never put it in a file.
@@ -93,7 +134,6 @@ Good candidates are judgments over a bounded set: categorizing a transaction, ro
 Two notes that read against the general Jev literature. For the vendor-level treatment — the interface, calibration vs. accuracy, the four-workflow eval, and pricing at $0.042 per million input tokens — see **"The model that won't talk"** (the decision-native-models guide, in Onyx under `Learnings/Anthropic/Anthropic Applied AI Architect`). This doc is what happened when those claims met a build.
 
 - **Here Jev *drives* the loop rather than sitting beside one.** The usual framing puts cheap typed judgments in five seats around a *generative* agent loop: completion check, tool gate, trace grade, loop detection, escalation. `navigate_goal` has no LLM in the loop at all — Jev is the controller and code is everything else. That is cheaper again, and it has a different failure mode: nothing in the loop can explain itself, so the run's own record is the only evidence there is. That is why `runGoal` returns `steps[]` and the probe prints it. Build the trace before the second use case, not after.
-- **The nearest untouched candidate is jobscan**, where a haiku worker already scores each posting against a fixed rubric — a `score` question over an enumerable set, run per row. Same shape, currently paying generative prices for it.
 
 ## Keep or kill
 

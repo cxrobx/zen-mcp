@@ -477,6 +477,16 @@ division of labor</a></li>
 build</a></li>
 <li><a href="#measurements">Measurements</a></li>
 <li><a href="#known-limits">Known limits</a></li>
+<li><a href="#where-else--the-survey-and-the-verdict">Where else — the survey
+and the verdict</a>
+<ul>
+<li><a href="#four-filters-that-kill-a-candidate-before-the-shape-test">Four
+filters that kill a candidate before the shape test</a></li>
+<li><a href="#the-survey">The survey</a></li>
+<li><a href="#looks-like-a-fit-isnt">Looks like a fit, isn't</a></li>
+<li><a href="#tripwires--revisit-only-when-one-of-these-is-true">Tripwires —
+revisit only when one of these is true</a></li>
+</ul></li>
 <li><a href="#porting-to-another-project">Porting to another project</a></li>
 <li><a href="#keep-or-kill">Keep or kill</a></li>
 </ul>
@@ -489,6 +499,10 @@ build</a></li>
 <p>Status: implemented 2026-09-16 (<code>interactive_elements</code>,
 <code>wait_for</code> <code>stable</code>, <code>navigate_goal</code>).
 An experiment with a written keep/kill test at the bottom.</p>
+<p><strong>Before proposing a second integration, read § <em>Where else
+— the survey and the verdict</em>. The answer as of 2026-09-17 is no,
+and the three tripwires that would change it are listed there. Don't
+re-derive it.</strong></p>
 <p>This is also the reference for adding TypeSafe's Jev to other
 projects. The zen-mcp specifics are examples of rules that travel.</p>
 <h2 id="what-jev-is">What Jev is</h2>
@@ -684,6 +698,117 @@ cost per token isn't known yet.</li>
 <li><strong>Read-only by construction.</strong> No typing, selecting,
 toggling or form flows, and that is not a gap to close here.</li>
 </ul>
+<h2 id="where-else--the-survey-and-the-verdict">Where else — the survey
+and the verdict</h2>
+<p><strong>Verdict, 2026-09-17: no second integration.</strong> Jev is
+priced for a problem this shop doesn't have. Its whole pitch is cost
+<em>per decision</em>, and the marginal cost of a decision here is
+already <strong>zero</strong> — the decision layer runs on the Claude
+subscription (jobscan's haiku workers, aimedia's planner, every headless
+<code>claude -p</code>). "40–400× cheaper" is a comparison against a
+metered bill that doesn't exist; adding Jev doesn't remove a line item,
+it adds one. It also adds permanent harness surface — the fail-closed
+allowlist, <code>redactText</code>, the financial-domain block and the
+tests for all three — which exists because the first live run leaked an
+account email.</p>
+<p>Not "Jev is bad." <strong>Jev is built for someone paying per
+decision at volume.</strong> This shop pays per month, at low volume,
+against latency budgets measured in seconds.</p>
+<h3 id="four-filters-that-kill-a-candidate-before-the-shape-test">Four
+filters that kill a candidate before the shape test</h3>
+<ol type="1">
+<li><strong>Text or JSON only</strong> (~32k tokens, no images).
+Anything judged from a frame or a screenshot is out — aimedia's story
+checks read a scene's last frame; the iOS validator compares
+screenshots.</li>
+<li><strong>Quality is lateral at best.</strong> 67.8% agreement in
+TypeSafe's own four-workflow eval — level with Sonnet 5, behind Opus 5
+(73.1) and Sol (74.1). Only ever a swap where <strong>haiku is already
+good enough</strong>; never where Opus was the right call.</li>
+<li><strong>Cost only binds where the subscription doesn't
+reach.</strong> See the verdict.</li>
+<li><strong>Latency needs a sub-2-second budget to matter.</strong>
+130–400 ms against ~3–5 s wins nothing under a 60-second SLA.</li>
+</ol>
+<h3 id="the-survey">The survey</h3>
+<table>
+<thead>
+<tr>
+<th>Candidate</th>
+<th>The judgment</th>
+<th>Why not now</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>QES / LSA responder</strong></td>
+<td>urgency × $value · service category · technician class · is the
+six-field intake complete</td>
+<td>The shape is exact — this <em>is</em> the differentiator sold
+against Housecall Pro. But the budget is <strong>60 s</strong>, which
+haiku clears by 20×, and one contractor is not volume.
+<strong>Correction to an earlier read here: "sub-60s is contractual,
+therefore binding" was wrong</strong> — a constraint met 20× over is not
+a constraint</td>
+</tr>
+<tr>
+<td><strong>jobscan</strong></td>
+<td>score a posting against the rubric</td>
+<td><strong>The only live signal.</strong> haiku workers tripped the
+Claude <em>session limit</em> — the one place the subscription stops
+being free, because the constraint turns into rate, not dollars. Still
+weak: 3 workers, a weekly sweep</td>
+</tr>
+<tr>
+<td><strong>PocketBuddy values alignment</strong></td>
+<td>merchant ↔︎ a stated value</td>
+<td>Genuine fan-out shape, already schema-gated — but single-user
+volume. Not the bottleneck</td>
+</tr>
+<tr>
+<td><strong><code>navigate_goal</code></strong></td>
+<td>built</td>
+<td>Let the keep/kill test below finish; don't expand the allowlist to
+feed it</td>
+</tr>
+</tbody>
+</table>
+<p>The move on all of them is the same, and it doesn't need Jev:
+<strong>decompose into named typed questions on haiku first.</strong>
+The decision-native-models guide's own strongest finding is that
+<em>decomposition, not the model,</em> produced most of the measured
+gain — every comparison model got more accurate, faster and cheaper
+inside an explicit decomposed workflow. Do that and the Jev swap stays a
+one-line, reversible margin lever for later.</p>
+<h3 id="looks-like-a-fit-isnt">Looks like a fit, isn't</h3>
+<ul>
+<li><strong>aimedia story checks</strong> — vision. Out by filter 1.
+(The Whisper line-vs-planned-line check is text on text and could go;
+it's a sliver.)</li>
+<li><strong>CXMail triage</strong> — one user. Nothing binds, and haiku
+is already fine.</li>
+<li><strong>TeacherHero's coach</strong> — full curriculum context is
+the moat, and the moat is generative.</li>
+<li><strong>The <code>deny-secret-exposure</code> hook</strong> —
+tempting as a <code>noul</code> ("does this command expose a
+credential?"). Hard no: it puts a network round trip in front of every
+Bash call, and a false negative leaks a key. A regex that fails
+<strong>closed</strong> beats a probability that is honest on
+average.</li>
+</ul>
+<h3 id="tripwires--revisit-only-when-one-of-these-is-true">Tripwires —
+revisit only when one of these is true</h3>
+<ol type="1">
+<li><strong>A decision path gets a sub-2-second budget</strong> — voice,
+a live UI gate, a real per-tick loop.</li>
+<li><strong>Subscription rate limits, not dollars, become the binding
+constraint</strong> on a single workflow. Watch jobscan; it has already
+tripped once.</li>
+<li><strong>Per-decision cost is billed through to a client at
+volume</strong> — the LSA line across <em>many</em> contractors, not
+one.</li>
+</ol>
+<p>None are true today. Until one is, the answer is no.</p>
 <h2 id="porting-to-another-project">Porting to another project</h2>
 <ol type="1">
 <li>Store the key once: <code>sk TYPESAFE_API_KEY</code>. Consume it
@@ -726,10 +851,6 @@ nothing in the loop can explain itself, so the run's own record is the
 only evidence there is. That is why <code>runGoal</code> returns
 <code>steps[]</code> and the probe prints it. Build the trace before the
 second use case, not after.</li>
-<li><strong>The nearest untouched candidate is jobscan</strong>, where a
-haiku worker already scores each posting against a fixed rubric — a
-<code>score</code> question over an enumerable set, run per row. Same
-shape, currently paying generative prices for it.</li>
 </ul>
 <h2 id="keep-or-kill">Keep or kill</h2>
 <p>Keep <code>navigate_goal</code> if it is at least <strong>3×
