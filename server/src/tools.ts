@@ -44,6 +44,20 @@ import {
 import { ZenToolError } from "./errors.js";
 import { continueCursor, withResponseBudget } from "./response-budget.js";
 import { parseLocator } from "./locator.js";
+import {
+  GOAL_DEFAULT_MAX_STEPS,
+  GOAL_DEFAULT_MIN_CONFIDENCE,
+  GOAL_MAX_STEPS,
+  formatGoalResult,
+  runGoal,
+} from "./goal.js";
+import {
+  INTERACTIVE_DEFAULT_LIMIT,
+  INTERACTIVE_MAX_LIMIT,
+  collectInteractive,
+  formatInteractiveLine,
+} from "./interactive.js";
+import { JEV_KEY_NAME, askJev, loadJevConfig, requireJevHost } from "./jev.js";
 import { NavContext, withNavMeta } from "./nav-memory.js";
 import { requireSecretBinding, resolveSecret, scrubSecretValue } from "./secrets.js";
 import {
@@ -466,6 +480,62 @@ function okWithFeedback(text: string, r: InteractionResult): ToolResponse {
     ...(r.feedback?.url ? { url: r.feedback.url } : {}),
     ...(r.feedback?.navigated ? { navigated: true } : {}),
   });
+}
+
+// Controls, not content: a count of these holding still is the "done rendering" signal that
+// survives clocks, spinners and streaming text, which keep innerText moving forever.
+const STABLE_PROBE =
+  "var sel = 'a,button,input,select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[role=combobox]'; return [document.readyState, document.querySelectorAll(sel).length];";
+const STABLE_POLL_MS = 150;
+export const STABLE_DEFAULT_MS = 500;
+const GOAL_SETTLE_TIMEOUT_MS = 8_000;
+
+/**
+ * Resolve once the page's interactive-control count has held for stableMs and the document
+ * is past "loading". Probe errors are treated as "still changing" (evaluate fails transiently
+ * mid-navigation - nav-memory recorded 16 such UNKNOWNs followed by a clean retry) and are
+ * named in the timeout if they never clear. Top frame only, like every DomEvaluate caller.
+ */
+async function waitForStable(
+  daemon: DaemonClient,
+  tabId: number,
+  stableMs: number,
+  timeoutMs: number,
+): Promise<{ elapsedMs: number; count: number }> {
+  const start = Date.now();
+  const deadline = start + timeoutMs;
+  let lastCount = -1;
+  let since = start;
+  let lastState = "unknown";
+  let lastError = "";
+  while (Date.now() < deadline) {
+    let state = "";
+    let count = -1;
+    try {
+      const r = await daemon.call<EvaluateScriptResult>(Methods.DomEvaluate, { tabId, code: STABLE_PROBE });
+      if (Array.isArray(r.result) && typeof r.result[1] === "number") {
+        state = String(r.result[0]);
+        count = r.result[1];
+      }
+      lastError = "";
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+    const now = Date.now();
+    if (count < 0 || state === "loading" || count !== lastCount) {
+      lastCount = count;
+      since = now;
+    } else if (now - since >= stableMs) {
+      return { elapsedMs: now - start, count };
+    }
+    if (state) lastState = state;
+    await new Promise((r) => setTimeout(r, STABLE_POLL_MS));
+  }
+  throw new ZenToolError(
+    "TIMEOUT",
+    `wait_for(stable) timed out after ${timeoutMs}ms: the interactive-control count never held for ${stableMs}ms (last count=${lastCount}, readyState=${lastState}${lastError ? `, last probe error: ${truncateOneLine(lastError, 120)}` : ""})`,
+    "The page keeps re-rendering (a live list, carousel, or ticker). Wait for a specific element with condition=selector_visible or text instead.",
+  );
 }
 
 function formatCookieFailures(
@@ -1085,6 +1155,50 @@ export function registerTools(
   );
 
   server.registerTool(
+    "interactive_elements",
+    {
+      title: "List interactive elements",
+      description:
+        "The clickable and fillable controls on one tab (address it by tabId or pageIdx), one line each: UID, kind, label, link destination, and the row and region it sits in. A fraction of take_snapshot's size - use it to decide what to click, then act with click_by_uid / fill_by_uid. Takes a fresh snapshot, so earlier UIDs for this tab are replaced. Row context tells same-label controls apart (two \"Edit\" buttons in different rows). Field values are never shown. Includes iframe controls (frame=N) by default.",
+      inputSchema: {
+        ...targetShape(),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(INTERACTIVE_MAX_LIMIT)
+          .optional()
+          .describe(`Max elements to list, in DOM order (default ${INTERACTIVE_DEFAULT_LIMIT}, max ${INTERACTIVE_MAX_LIMIT})`),
+        includeIframes: z.boolean().optional(),
+        maxBytes: z.number().int().positive().optional(),
+      },
+    },
+    async ({ pageIdx, tabId, expectTabSet, limit, includeIframes, maxBytes }) => {
+      try {
+        const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
+        const params: Record<string, unknown> = { tabId: page.tabId };
+        if (includeIframes !== undefined) params.includeIframes = includeIframes;
+        const r = await daemon.call<TakeSnapshotResult>(Methods.DomTakeSnapshot, params);
+        if (r.selectorError) return fail(new Error(r.selectorError));
+        const pageUrl = effectivePageUrl(page);
+        const collection = collectInteractive(r.tree, r.uidMap, { limit, pageUrl });
+        const header = `interactive elements for tabId=${r.tabId} (snapshot ${r.snapshotId}): ${collection.elements.length} of ${collection.total}${collection.truncated ? " - raise limit to see the rest" : ""}${r.truncated ? " (snapshot itself was truncated)" : ""}`;
+        const headings = collection.headings.length ? `\nheadings: ${collection.headings.map((h) => JSON.stringify(h)).join(" | ")}` : "";
+        const body = collection.elements.length
+          ? collection.elements.map(formatInteractiveLine).join("\n")
+          : "(no interactive elements)";
+        return withNavMeta(ok(`${header}${headings}\n${withResponseBudget(body, maxBytes).text}`), {
+          url: page.url,
+          snapshotUids: r.uidMap.length,
+          snapshotTruncated: r.truncated,
+        });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "clear_snapshot",
     {
       title: "Clear DOM snapshot",
@@ -1511,7 +1625,7 @@ export function registerTools(
     {
       title: "Wait for a condition",
       description:
-        "Poll until a condition holds. Supports text (page innerText contains), selector_visible/hidden (locator matches and offsetParent), selector_count (locator count compared via op), url (substring or regex when urlRegex:true), time (fixed delay).",
+        "Poll until a condition holds. Supports text (page innerText contains), selector_visible/hidden (locator matches and offsetParent), selector_count (locator count compared via op), url (substring or regex when urlRegex:true), time (fixed delay), stable (the page's interactive-control count stops changing for stableMs, default 500 - use after a click or navigation on a page that renders asynchronously, when you don't know which text will appear; top frame only).",
       inputSchema: {
         ...targetShape(),
         condition: z.enum([
@@ -1521,7 +1635,9 @@ export function registerTools(
           "selector_count",
           "url",
           "time",
+          "stable",
         ]),
+        stableMs: z.number().int().positive().optional(),
         text: z.string().optional(),
         selector: z.string().optional(),
         count: z.number().int().nonnegative().optional(),
@@ -1546,6 +1662,7 @@ export function registerTools(
         urlRegex,
         ms,
         timeout,
+        stableMs,
       } = args;
       try {
         if (condition === "time") {
@@ -1556,6 +1673,11 @@ export function registerTools(
         const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
         const targetTabId = page.tabId;
         const totalTimeout = timeout ?? 10_000;
+        if (condition === "stable") {
+          const quiet = stableMs ?? STABLE_DEFAULT_MS;
+          const r = await waitForStable(daemon, targetTabId, quiet, totalTimeout);
+          return ok(`Stable after ${r.elapsedMs}ms (${r.count} interactive controls unchanged for ${quiet}ms).`);
+        }
         const start = Date.now();
         const deadline = start + totalTimeout;
         const POLL_MS = 200;
@@ -1675,6 +1797,93 @@ export function registerTools(
         );
       } catch (err) {
         return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "navigate_goal",
+    {
+      title: "Navigate toward a goal (Jev)",
+      description:
+        "Reach a READ-ONLY destination on one tab - e.g. \"open the Pages indexing report\" - with TypeSafe's Jev model choosing each click, so you are not consulted per step. Only clicks links, buttons, tabs and menu items: never types, fills, selects or toggles, withholds controls labeled with action words (delete, save, pay, send...), and asks Jev whether the chosen control could change anything before clicking. Stops and hands back on: goal reached, a sign-in page, Jev picking none, low confidence, a repeated click, leaving the allowlisted host, or maxSteps. Returns a per-step trace. Runs ONLY on hosts listed in ~/.config/zen-mcp/jev.json, because the goal, page title/path/headings and control labels are sent to api.typesafe.ai. Never use it for forms, payments, or anything that changes state.",
+      inputSchema: {
+        ...targetShape(),
+        goal: z.string().min(3).max(300).describe("Where to end up, in plain words"),
+        maxSteps: z
+          .number()
+          .int()
+          .positive()
+          .max(GOAL_MAX_STEPS)
+          .optional()
+          .describe(`Most clicks to make (default ${GOAL_DEFAULT_MAX_STEPS}, max ${GOAL_MAX_STEPS})`),
+        minConfidence: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe(`Stop when the best pick's probability is below this (default ${GOAL_DEFAULT_MIN_CONFIDENCE})`),
+      },
+    },
+    async ({ pageIdx, tabId, expectTabSet, goal, maxSteps, minConfidence }) => {
+      let apiKey = "";
+      try {
+        const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
+        const target = page.tabId;
+        const allowHost = (host: string | null) => requireJevHost(loadJevConfig(), host);
+        // Before the key is even read: an unlisted host must cost nothing and send nothing.
+        allowHost(normalizeUrl(effectivePageUrl(page))?.host ?? null);
+        try {
+          apiKey = await resolveSecret(JEV_KEY_NAME);
+        } catch (err) {
+          if (!(err instanceof ZenToolError)) throw err;
+          throw new ZenToolError(
+            err.code,
+            err.message,
+            err.code === "TIMEOUT"
+              ? "Nothing was sent. macOS may be showing a Keychain access dialog - check the screen, then retry."
+              : `Nothing was sent. Store the TypeSafe key with sk ${JEV_KEY_NAME}; never paste it into the conversation.`,
+          );
+        }
+        const result = await runGoal(
+          {
+            page: async () => {
+              const current = await resolveTarget(daemon, { tabId: target });
+              return { url: effectivePageUrl(current), title: current.title ?? "" };
+            },
+            settle: async () => {
+              try {
+                await waitForStable(daemon, target, STABLE_DEFAULT_MS, GOAL_SETTLE_TIMEOUT_MS);
+                return true;
+              } catch (err) {
+                if (err instanceof ZenToolError && err.code === "TIMEOUT") return false;
+                throw err;
+              }
+            },
+            elements: async (url) => {
+              const snap = await daemon.call<TakeSnapshotResult>(Methods.DomTakeSnapshot, { tabId: target });
+              return collectInteractive(snap.tree, snap.uidMap, { limit: Number.MAX_SAFE_INTEGER, pageUrl: url });
+            },
+            click: async (uid) => {
+              const r = await daemon.call<InteractionResult>(Methods.DomClick, { tabId: target, uid });
+              return { navigated: r.feedback?.navigated === true };
+            },
+            ask: (state, questions) => askJev(apiKey, state, questions),
+            allowHost,
+          },
+          {
+            goal,
+            maxSteps: maxSteps ?? GOAL_DEFAULT_MAX_STEPS,
+            minConfidence: minConfidence ?? GOAL_DEFAULT_MIN_CONFIDENCE,
+          },
+        );
+        const response = withNavMeta(ok(formatGoalResult(result)), {
+          url: result.finalUrl || page.url,
+          ...(result.clicks > 0 ? { navigated: true } : {}),
+        });
+        return scrubSecretValue(response, apiKey);
+      } catch (err) {
+        return scrubSecretValue(fail(err), apiKey);
       }
     },
   );

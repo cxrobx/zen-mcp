@@ -41,8 +41,9 @@ Per-tab tools take `tabId` (durable) or `pageIdx` (positional) — see [Addressi
 |---|---|
 | **Containers** | `list_containers`, `container_routes`, `set_default_container`, `new_page_in_container` |
 | **Pages** | `open_url`, `list_pages`, `new_page`, `navigate_page`, `select_page`, `close_page`, `navigate_history`, `screenshot_page` |
-| **DOM read** | `take_snapshot`, `clear_snapshot`, `resolve_uid_to_selector`, `evaluate_script`, `get_page_text`, `read_page`, `find_by_text`, `wait_for` |
+| **DOM read** | `take_snapshot`, `interactive_elements`, `clear_snapshot`, `resolve_uid_to_selector`, `evaluate_script`, `get_page_text`, `read_page`, `find_by_text`, `wait_for` |
 | **DOM actions** | `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `fill_form_by_uid`, `drag_by_uid_to_uid`, `click`, `hover`, `fill`, `fill_secret`, `type`, `drag`, `select_option`, `press_key`, `scroll` |
+| **Goal navigation (Jev)** | `navigate_goal` |
 | **Cookies/storage** | `get_cookies`, `set_cookies`, `clear_cookies`, `get_storage`, `set_storage`, `clear_storage` |
 | **Diagnostics** | `get_firefox_info` |
 | **Navigation memory** | `get_domain_playbook`, `nav_memory_stats`, `nav_memory_forget` |
@@ -117,6 +118,22 @@ Two limits worth knowing. Reuse only sees the **active Zen workspace**, so a mat
 
 Failure modes are loud on purpose: a rule naming a container that does not exist **errors and opens nothing**, because a silent fallback is how a login ends up in the wrong jar. A missing file is simply "no rules"; a malformed one reports the parse error instead of looking empty. Inspect the live state with `container_routes` (add `url` to see how one URL resolves, `reload: true` after editing the file) or the `mcp.containerRoutes` line in `get_firefox_info`. Set `ZEN_MCP_CONTAINER_ROUTES=0` to switch routing off for an entry.
 
+### interactive_elements and navigate_goal
+
+`interactive_elements` lists a tab's controls one per line (UID, kind, label, link destination, row and region) from a fresh snapshot, so the UIDs work with `click_by_uid`. It is roughly 6× smaller than `take_snapshot` (measured on Search Console: 2,909 vs 18,764 characters). Row context tells same-label controls apart, and field values are never shown.
+
+`wait_for({ condition: "stable" })` waits until the page's interactive-control count holds for `stableMs` (default 500). Use it after a click on an asynchronously rendering page when you don't know which text will appear.
+
+`navigate_goal` reaches a **read-only** destination ("open the Sitemaps report") with TypeSafe's Jev model choosing each click, so the calling model isn't consulted per step. It only clicks links, buttons, tabs and menu items; it withholds fields, toggles, off-host links and action-word labels; it asks Jev whether the chosen control could change anything before clicking; and it stops on a sign-in page, low confidence, `none`, a repeated click, leaving the host, or `maxSteps`. It returns a per-step trace.
+
+It sends the goal, page title/path/headings and control labels (redacted for emails, tokens and ids) to `api.typesafe.ai`, so it runs **only on hosts listed** in `$XDG_CONFIG_HOME/zen-mcp/jev.json` (fallback `~/.config/...`, override `ZEN_MCP_JEV_CONFIG`):
+
+```json
+{ "hosts": ["search.google.com"] }
+```
+
+Exact hosts only. An absent file means "not enabled", a malformed one is an error, and an unlisted host sends nothing and never reads the key. The key is `TYPESAFE_API_KEY` in the login Keychain (`sk TYPESAFE_API_KEY`). Design, thresholds and measurements: [`docs/jev.md`](docs/jev.md).
+
 Tools the Marionette-based predecessor had that have **no WebExtension equivalent**, and so are absent here by design: `list_privileged_contexts` / `select_privileged_context` / `evaluate_privileged_script`, `set_firefox_prefs` / `get_firefox_prefs`, `restart_firefox`, `upload_file_by_uid`, `install_extension` / `list_extensions` / `uninstall_extension`.
 
 Deferred to v2 (need degraded-fidelity content-script bridges): `list_console_messages`, `clear_console_messages`, `list_network_requests`, `get_network_request`, `accept_dialog`, `dismiss_dialog`, `screenshot_by_uid`, full-page screenshot.
@@ -124,7 +141,7 @@ Deferred to v2 (need degraded-fidelity content-script bridges): `list_console_me
 Fidelity gaps to know:
 - `screenshot_page` captures the target tab's visible viewport in place via `tabs.captureTab(tabId)` — it does **not** activate the tab or change window focus. It defaults to JPEG quality 80; pass `format: "png"` for lossless output.
 - `evaluate_script` requires JSON-serializable results (the `scripting.executeScript` constraint). Returning DOM nodes or non-serializable objects fails. The function body is transpiled and interpreted without `eval()`/`Function()`, so page CSP does not block it.
-- Large textual responses from `take_snapshot`, `evaluate_script`, `get_page_text`, `read_page`, `get_cookies`, and `get_storage` honor `maxBytes` + `cursor`.
+- Large textual responses from `take_snapshot`, `evaluate_script`, `get_page_text`, `read_page`, `get_cookies`, and `get_storage` honor `maxBytes` + `cursor`; `interactive_elements` honors `maxBytes`.
 - Locator actions (`click`, `hover`, `fill`, `type`, `drag`, `select_option`, `press_key`) auto-wait for matches with `timeoutMs` and scroll targets into view before acting.
 
 Focus behavior: automation is non-disruptive by default. `new_page` / `new_page_in_container` open tabs in the **background** (pass `active: true` to foreground), `navigate_page` and the DOM tools act on a tab by id without activating it, and `screenshot_page` captures without focus. The only tools that surface a tab to the foreground are `select_page` and an explicit `active: true` on `new_page` / `open_url` — and when the tab lives in another Zen workspace, those are also the only tools that make Zen switch workspaces. This means an MCP entry can drive one container (e.g. `zen-cxv`) while you browse in another (e.g. `zen-personal`) without your focus being stolen.
