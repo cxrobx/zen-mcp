@@ -77,6 +77,77 @@ For comparison, nav-memory telemetry puts the median gap between Claude-driven s
 - **Pricing unchecked.** Tokens are reported per run; cost per token isn't known yet.
 - **Read-only by construction.** No typing, selecting, toggling or form flows, and that is not a gap to close here.
 
+## Use cases — how to recognize one
+
+Added 2026-09-17 from two X posts: a Grok answer to "give me a few brief use cases as
+an entrepreneur" (route tickets/leads by intent; score risk, pricing or inventory in
+real time; run dozens of parallel user-flow sims or A/B tests; power high-speed browser
+agents; guardrail other AI agents — all under a cent per run), and Max Blade's demo of
+Jev playing Subway Surfers at superhuman speed and 50 games at once. Both are
+**marketing-adjacent claims, not measurements taken here.** Kept because the shapes they
+name are right, and two of them are the shapes already built in this repo.
+
+The framing worth keeping, from Blade: **Jev does not replace an LLM — it is a different
+primitive.** An LLM is something you call. Jev is cheap and fast enough to put *inside* a
+loop.
+
+### The shape test
+
+A judgment fits Jev when all four hold:
+
+1. **The answer is picked, not composed.** One of a set, a yes/no, or a level on an
+   ordered rubric. If the deliverable is a sentence, that is an LLM.
+2. **Code can enumerate the set.** ≤255 options, built by code, always with a `none`.
+3. **A wrong answer is survivable or catchable.** There is a threshold to set and a
+   hand-back path when it is not met (rule 3 above).
+4. **The decision recurs often enough that latency or cost is the binding constraint** —
+   per request, per step, per row, per tick. One decision an hour does not need Jev; a
+   3-second LLM call is fine there.
+
+Fail any of them and it is an LLM job, a rules job, or not a job.
+
+### Four shapes
+
+| Shape | What it looks like | Status here |
+|---|---|---|
+| **Request-path decision** | Classify / route / score inside a live request where seconds and cents per call do not fit: intent → queue, lead → priority, an urgency or risk score | Not built |
+| **Loop controller** | A judgment per step of a loop the code is driving — the thing an LLM cannot sit inside | **Built:** `navigate_goal` (which control, are we done, per step) |
+| **Fan-out** | The same question over N rows, or N parallel runs at once | Planned: PocketBuddy values alignment (batched per merchant) |
+| **Guardrail on another agent** | A cheap second opinion on every action an LLM-driven agent wants to take | **Built:** the `mutates` check before any click |
+
+The useful part is that two of the four already exist here, arrived at independently
+before the posts: the "new world" shape (loop controller) and the guardrail shape.
+
+### Mapped across the portfolio
+
+Candidate reads, not commitments. Each still owes the shape test and the privacy gate.
+
+| Where | Judgment | Shape | Note |
+|---|---|---|---|
+| QES / LSA responder | is this a real lead · urgency · auto-reply vs. dispatch · is the six-field intake complete | request-path | The *reply text* stays an LLM job; only the routing is Jev's |
+| jobscan | score a posting against the rubric | fan-out | Today a haiku worker doing exactly a pick-from-rubric — the cheapest swap on this list |
+| cxmail triage | needs-a-reply · urgency · which mail rule | request-path / fan-out | |
+| PocketBuddy values alignment | merchant ↔ stated value | fan-out | Allowlisted schema only — `finance-app/plans/values-alignment.md` |
+| BuildersBuddy / Artist Advisory | a deal or a track scored on an ordered rubric | fan-out | The `score` primitive |
+| Anything user-linked financial | — | — | **Out.** Not a shape question |
+
+### Where it is the wrong tool
+
+- **The output is prose** — an LSA reply, proposal copy, a summary. Jev picks; it does not write.
+- **You need the reason.** Jev returns a probability and nothing else. If a human has to
+  be told *why*, an LLM has to say it.
+- **The option set cannot be enumerated or capped.**
+- **The decision is rare.** The whole advantage is per-decision cost and latency.
+- **The state would carry user-linked financial data**, or anything that fails the
+  allowlist / redact / withhold gate. That gate sits upstream of the use case, not inside it.
+
+### On the "under a cent" claim
+
+Both posts anchor on cost. **Not verified here.** This repo measures tokens (~4.8k over
+3 requests for a 1-click run) and still has pricing unchecked. Price a real run before
+committing to any fan-out candidate above — a per-row judgment at portfolio volume is
+the one place a wrong cost assumption compounds.
+
 ## Porting to another project
 
 1. Store the key once: `sk TYPESAFE_API_KEY`. Consume it with `secret run -k TYPESAFE_API_KEY -- <cmd>`; the Python SDK reads that env var by default. Never put it in a file.
@@ -88,7 +159,7 @@ For comparison, nav-memory telemetry puts the median gap between Claude-driven s
 7. Inject the Jev call so tests can fake it, and test the refusal paths end to end.
 8. Measure latency, tokens and hand-back rate on real inputs before deciding it fits.
 
-Good candidates are judgments over a bounded set: categorizing a transaction, routing an intake message, checking a record against its source. It's a poor fit where the answer has to be generated rather than chosen.
+Use the shape test above to decide whether it is a fit at all.
 
 ## Keep or kill
 
