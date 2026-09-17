@@ -708,6 +708,29 @@ deciding it fits.</li>
 transaction, routing an intake message, checking a record against its
 source. It's a poor fit where the answer has to be generated rather than
 chosen.</p>
+<p>Two notes that read against the general Jev literature. For the
+vendor-level treatment — the interface, calibration vs. accuracy, the
+four-workflow eval, and pricing at $0.042 per million input tokens — see
+<strong>"The model that won't talk"</strong> (the decision-native-models
+guide, in Onyx under
+<code>Learnings/Anthropic/Anthropic Applied AI Architect</code>). This
+doc is what happened when those claims met a build.</p>
+<ul>
+<li><strong>Here Jev <em>drives</em> the loop rather than sitting beside
+one.</strong> The usual framing puts cheap typed judgments in five seats
+around a <em>generative</em> agent loop: completion check, tool gate,
+trace grade, loop detection, escalation. <code>navigate_goal</code> has
+no LLM in the loop at all — Jev is the controller and code is everything
+else. That is cheaper again, and it has a different failure mode:
+nothing in the loop can explain itself, so the run's own record is the
+only evidence there is. That is why <code>runGoal</code> returns
+<code>steps[]</code> and the probe prints it. Build the trace before the
+second use case, not after.</li>
+<li><strong>The nearest untouched candidate is jobscan</strong>, where a
+haiku worker already scores each posting against a fixed rubric — a
+<code>score</code> question over an enumerable set, run per row. Same
+shape, currently paying generative prices for it.</li>
+</ul>
 <h2 id="keep-or-kill">Keep or kill</h2>
 <p>Keep <code>navigate_goal</code> if it is at least <strong>3×
 faster</strong> than the Claude-driven path on three recurring
