@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jev in zen-mcp</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+/* ===========================================================================
+   CX HTML Artifact — shared design system
+   Component set ported from Thariq's "unreasonable effectiveness of HTML" examples
+   (https://thariqs.github.io/html-effectiveness/). Palette + type match the Obsidian
+   vault: Solarized Light with the peach accent (AnuPpuccin + extended-colorschemes),
+   JetBrains Mono throughout, headings coloured by level, light tan code blocks.
+   The scaffold scripts inline this file so output stays one shareable file.
+   Recolor per-artifact by overriding the :root custom properties.
+   =========================================================================== */
+
+:root {
+  /* palette — matches the Obsidian vault's LIGHT theme: AnuPpuccin + the
+     extended-colorschemes snippet on Solarized Light, peach accent
+     (~/Documents/CX/.obsidian/plugins/obsidian-style-settings/data.json), 2026-09-10.
+     Token NAMES are kept from the original Anthropic port so every component below
+     still resolves; tints are color-mix() off these, so re-accenting is a one-line
+     --clay override. Code blocks + inline code sit on --code-bg (ctp crust), as in Obsidian. */
+  --ivory:    #FDF6E3;   /* page background  (ctp base / Solarized base3)    */
+  --slate:    #000000;   /* primary ink — black (was Solarized navy #002B36) */
+  --code-bg:  #E0D7B8;   /* code blocks + inline code (ctp crust)            */
+  --hr:       #ADB8B8;   /* dividers         (ctp surface0 = modifier-border) */
+  --clay:     #CB4B16;   /* accent           (ctp peach / Solarized orange)  */
+  --clay-700: #A93D11;   /* accent hover — darkened peach                    */
+  --oat:      #E0D7B8;   /* (ctp crust)                                      */
+  --olive:    #859900;   /* additions / success (Solarized green)            */
+  --rust:     #DC322F;   /* deletions / danger  (Solarized red)              */
+  --warn:     #B58900;   /* warning             (Solarized yellow)           */
+  --gray-100: #EDE8D6;   /* subtle fill      (ctp mantle / base2)            */
+  --gray-300: #E0D7B8;   /* borders + rules  (ctp crust)                     */
+  --gray-500: #666666;   /* muted text — neutral (was blue-gray #657B83)  */
+  --gray-700: #333333;   /* secondary text — neutral (was navy #0A4C5C)     */
+  --white:    #FDF6E3;   /* card surface = page; cards read by their border  */
+
+  /* type — Google Fonts link lives in template.html; these fall back gracefully offline */
+  --serif: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;   /* headings too — the vault is all mono */
+  --sans:  "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;   /* body matches the Obsidian vault (interface + text font) */
+  --mono:  "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+
+  /* tokens */
+  --maxw: 980px;
+  --radius-panel: 12px;
+  --radius-row: 8px;
+  --border: 1.5px solid var(--gray-300);
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 12px 32px -16px rgba(0,0,0,.18);
+}
+
+/* ---------- base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  padding: 56px 24px 96px;
+  background: var(--ivory);
+  color: var(--slate);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: var(--maxw); margin: 0 auto; }
+
+/* ---------- header ---------- */
+.doc-header { margin-bottom: 48px; }
+.doc-header .eyebrow { font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--gray-500); margin: 0 0 14px; }
+.doc-header h1 { font-family: var(--serif); font-weight: 600; font-size: 32px; line-height: 1.15;
+  letter-spacing: -.01em; margin: 0 0 8px; color: var(--slate); }
+.doc-header .subtitle { color: var(--gray-500); font-size: 15px; margin: 0; max-width: 60ch; }
+.doc-header .meta { color: var(--gray-500); font-family: var(--mono); font-size: 12px; margin-top: 14px; }
+
+/* ---------- headings ---------- */
+h2, h3, h4 { font-family: var(--serif); font-weight: 600; color: var(--slate);
+  line-height: 1.25; letter-spacing: -.01em; scroll-margin-top: 1.25rem; }
+/* An anchor jump must land the heading BELOW anything stuck at top:0, or every
+   nav click hides the heading it just navigated to. A .levelbar carrying its
+   .lvl-note measures ~99px, so this clears it with room to spare. Pages without
+   one keep the tighter default. */
+body:has(.levelbar) :is(h2, h3, h4) { scroll-margin-top: 112px; }
+h2 { font-size: 26px; margin: 56px 0 8px; padding-bottom: 14px; border-bottom: 1px solid var(--gray-300); }
+h3 { font-size: 20px; margin: 32px 0 10px; }
+h4 { font-size: 14px; margin: 24px 0 8px; font-family: var(--mono); font-weight: 500; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--gray-500); }
+/* heading colours — AnuPpuccin coloured-headers defaults (red, peach, green, teal,
+   lavender, mauve) resolved on Solarized Light */
+h1, .doc-header h1 { color: #DC322F; }
+h2 { color: #CB4B16; }
+h3 { color: #859900; }
+h4 { color: #2AA198; }
+h5 { color: #8B8FDE; }
+h6 { color: #6C71C4; }
+.anchor { color: var(--gray-300); text-decoration: none; margin-left: .4rem; opacity: 0;
+  transition: opacity .15s, color .15s; font-weight: 400; }
+h2:hover .anchor, h3:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--clay); }
+
+/* ---------- text ---------- */
+p { margin: 0 0 1rem; }
+a { color: var(--clay); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--clay) 35%, transparent);
+  transition: border-color .15s; }
+a:hover { border-bottom-color: var(--clay); }
+strong { font-weight: 600; color: var(--slate); }
+em { font-style: italic; }
+ul, ol { margin: 0 0 1rem; padding-left: 1.4rem; }
+li { margin: .3rem 0; }
+li::marker { color: var(--gray-500); }
+hr { border: 0; border-top: 2px solid var(--hr); margin: 40px 0; }
+small, .muted { color: var(--gray-500); }
+.eyebrow { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--gray-500); }
+blockquote { margin: 1.25rem 0; padding: .25rem 1.1rem; border-left: 3px solid var(--oat);
+  color: var(--gray-700); font-style: italic; }
+
+/* ---------- code ---------- */
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg);
+  border-radius: 4px; padding: 1px 5px; color: var(--slate); }
+pre { background: var(--code-bg); color: var(--slate); border-radius: var(--radius-panel);
+  padding: 18px 20px; overflow-x: auto; margin: 1.25rem 0; position: relative;
+  font-family: var(--mono); font-size: 13px; line-height: 1.7; }
+pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+.copy-btn { position: absolute; top: 10px; right: 10px; font-family: var(--sans); font-size: 11px;
+  padding: 4px 9px; border-radius: 6px; cursor: pointer; background: color-mix(in srgb, var(--slate) 8%, transparent);
+  color: var(--gray-700); border: 1px solid color-mix(in srgb, var(--slate) 18%, transparent); opacity: 0; transition: opacity .15s; }
+pre:hover .copy-btn { opacity: 1; }
+.copy-btn:hover { background: color-mix(in srgb, var(--slate) 14%, transparent); color: var(--slate); }
+
+/* ---------- syntax highlighting (spans inside pre / .diff .code) ---------- */
+.kw  { color: #D33682; }                              /* keyword    — Obsidian --code-keyword (pink)    */
+.str { color: #859900; }                              /* string     — --code-string (green)             */
+.fn  { color: #B58900; }                              /* function   — --code-function (yellow)          */
+.cl  { color: #DC322F; }                              /* class/type — --code-tag (red)                  */
+.num { color: #8B8FDE; }                              /* number     — --code-value (purple → lavender)  */
+.bi  { color: #2A91A1; }                              /* builtin    — --code-property (cyan → sky)      */
+.cm  { color: #5A5A5A; font-style: italic; }          /* comment    — --code-comment (text-faint)       */
+
+/* ---------- diff block (code review / PR explainers) ---------- */
+.diff { background: var(--code-bg); color: var(--slate); border-radius: var(--radius-panel);
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.7; overflow-x: auto; margin: 1.25rem 0; padding: 12px 0; }
+.diff-row { display: grid; grid-template-columns: 48px 18px 1fr; align-items: baseline; padding: 0 14px 0 0; white-space: pre; }
+.diff-row .ln { text-align: right; padding-right: 14px; color: var(--gray-500); user-select: none; }
+.diff-row .mark { text-align: center; color: var(--gray-500); }
+.diff-row .code { color: var(--slate); }
+.diff-row.ctx .code { color: #555555; }
+.diff-row.add { background: color-mix(in srgb, var(--olive) 15%, transparent); } .diff-row.add .mark { color: var(--olive); }
+.diff-row.del { background: color-mix(in srgb, var(--rust) 15%, transparent); }  .diff-row.del .mark { color: var(--rust); }
+
+/* ---------- tables ---------- */
+.table-scroll { overflow-x: auto; margin: 1.25rem 0; border: var(--border); border-radius: var(--radius-panel);
+  background: var(--white); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+thead th { background: var(--gray-100); text-align: left; font-family: var(--mono); font-weight: 500;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--gray-500);
+  padding: 10px 16px; border-bottom: 1.5px solid var(--gray-300); }
+td { padding: 11px 16px; border-bottom: 1px solid var(--gray-100); vertical-align: top; color: var(--gray-700); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: color-mix(in srgb, var(--gray-100) 55%, transparent); }
+
+/* ---------- callouts ---------- */
+.callout { background: var(--white); border: var(--border); border-left-width: 3px; border-radius: var(--radius-row);
+  padding: 14px 18px; margin: 1.25rem 0; }
+.callout > :first-child { margin-top: 0; } .callout > :last-child { margin-bottom: 0; }
+.callout .label { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+  margin-bottom: 6px; display: block; }
+.callout.note   { border-left-color: var(--clay); }  .callout.note   .label { color: var(--clay); }
+.callout.tip    { border-left-color: var(--olive); } .callout.tip    .label { color: var(--olive); }
+.callout.warn   { border-left-color: var(--warn); }  .callout.warn   .label { color: var(--warn); }
+.callout.danger { border-left-color: var(--rust); }  .callout.danger .label { color: var(--rust); }
+
+/* ---------- cards / panels / grid ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 1.5rem 0; }
+.card, .panel { background: var(--white); border: var(--border); border-radius: var(--radius-panel);
+  padding: 20px 22px; }
+.card > :first-child, .panel > :first-child { margin-top: 0; }
+.card > :last-child, .panel > :last-child { margin-bottom: 0; }
+.card h3, .card h4 { margin-top: 0; }
+
+/* ---------- badges / tags / kbd ---------- */
+.badge { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; font-size: 12px;
+  font-weight: 500; border-radius: 999px; background: var(--gray-100); color: var(--gray-700); }
+.badge.accent  { background: color-mix(in srgb, var(--clay) 14%, transparent); color: var(--clay); }
+.badge.success { background: color-mix(in srgb, var(--olive) 16%, transparent); color: var(--olive); }
+.badge.warning { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.badge.danger  { background: color-mix(in srgb, var(--rust) 14%, transparent);  color: var(--rust); }
+kbd { font-family: var(--mono); font-size: 12px; background: var(--gray-100); border: 1px solid var(--gray-300);
+  border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; color: var(--slate); }
+
+/* ---------- buttons / inputs (interactive artifacts) ---------- */
+.btn { display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 16px;
+  font-family: var(--sans); font-size: 14px; font-weight: 500; border-radius: var(--radius-row);
+  border: 1.5px solid transparent; cursor: pointer; transition: background .12s, border-color .12s; }
+.btn.primary   { background: var(--clay); color: var(--white); }
+.btn.primary:hover { background: var(--clay-700); }
+.btn.secondary { background: var(--white); color: var(--slate); border-color: var(--gray-300); }
+.btn.secondary:hover { background: var(--gray-100); }
+.btn.ghost     { background: transparent; color: var(--gray-700); }
+.btn.ghost:hover { background: var(--gray-100); }
+.input { height: 38px; padding: 0 12px; font-family: var(--sans); font-size: 14px; color: var(--slate);
+  background: var(--white); border: var(--border); border-radius: var(--radius-row); outline: none;
+  transition: border-color .12s, box-shadow .12s; }
+.input:focus { border-color: var(--clay); box-shadow: 0 0 0 3px color-mix(in srgb, var(--clay) 15%, transparent); }
+
+/* ---------- details / media ---------- */
+details { border: var(--border); border-radius: var(--radius-panel); padding: 2px 18px; margin: 1rem 0; background: var(--white); }
+summary { cursor: pointer; font-family: var(--serif); font-size: 17px; padding: 14px 0; color: var(--slate); }
+summary::-webkit-details-marker { color: var(--gray-500); }
+img, svg, video { max-width: 100%; height: auto; }
+figure { margin: 1.5rem 0; } figcaption { color: var(--gray-500); font-size: 13px; text-align: center; margin-top: 8px; }
+
+/* ---------- TOC ---------- */
+.toc { background: var(--white); border: var(--border); border-radius: var(--radius-panel);
+  padding: 16px 20px; margin: 0 0 48px; }
+.toc .label { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--gray-500); margin-bottom: 8px; }
+.toc ul { list-style: none; padding: 0; margin: 0; }
+.toc li { margin: 3px 0; }
+.toc a { color: var(--gray-700); border: 0; font-size: 14px; }
+.toc a:hover { color: var(--clay); }
+.toc li.h3 { padding-left: 16px; font-size: 13px; }
+.toc li.h3 a { color: var(--gray-500); }
+/* pandoc's --toc nests sub-headings instead of flat .h3 rows — indent either way */
+.toc ul ul { padding-left: 14px; }
+.toc ul ul a { font-size: 13px; color: var(--gray-500); }
+
+/* ---------- layout shell: content + vertical nav rail ---------- */
+/* HOUSE CONVENTION: on wide screens the nav is a VERTICAL STICKY LEFT RAIL,
+   outside the prose column, so it never scrolls out of reach. Author the
+   <nav class="toc"> by hand inside .rail .tocbox — it must work with JS off. */
+.layout { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 52px; align-items: start; }
+.rail { position: sticky; top: 104px; align-self: start;
+  max-height: calc(100vh - 130px); overflow-y: auto; overscroll-behavior: contain; }
+
+.tocbox { border-top: 1px solid var(--gray-300); padding-top: 16px; }
+.rail .toc { background: transparent; border: 0; box-shadow: none; padding: 0; margin: 0; }
+.rail .toc .label { margin: 0 0 10px 10px; }
+.rail .toc li { margin: 0; }
+.rail .toc a { display: block; padding: 6px 10px; border-radius: 7px; font-size: 12.5px;
+  line-height: 1.35; color: var(--gray-500); border: 0;
+  transition: background .12s ease, color .12s ease; }
+.rail .toc a:hover { background: var(--gray-100); color: var(--slate); }
+/* Reading position — CSS only; the template's IntersectionObserver is a
+   progressive enhancement that toggles this class. The nav works without it. */
+.rail .toc a.is-active { background: var(--gray-100); color: var(--slate); font-weight: 600; }
+
+/* A railed page needs more room than the default 980px measure: widen the shell
+   and cap the prose. Without :has() support this degrades to the plain default. */
+body:has(.layout nav.toc) .wrap { max-width: 1200px; }
+.layout:has(nav.toc) > main { max-width: 800px; }
+/* No authored nav (a short doc, or one whose nav was deleted) — collapse to one
+   column rather than leaving a 236px hole. Re-evaluates live if the JS adds one. */
+.layout:not(:has(nav.toc)) { display: block; }
+.layout:not(:has(nav.toc)) > .rail { display: none; }
+
+/* Below the rail's clearance the grid collapses and the nav reverts to the
+   in-flow card at the top of the page (the plain .toc styling above). */
+@media (max-width: 1040px) {
+  .layout { display: block; }
+  .layout:has(nav.toc) > main { max-width: none; }
+  .rail { position: static; max-height: none; overflow: visible; margin-bottom: 34px; }
+  .tocbox { border-top: 0; padding-top: 0; }
+  .rail .toc { background: var(--white); border: var(--border);
+    border-radius: var(--radius-panel); padding: 18px 20px; }
+  .rail .toc .label { margin-left: 0; }
+}
+
+/* ---------- explanation-level switch (pure CSS — works with JS disabled) ---------- */
+/* HOUSE CONVENTION: this control is ALWAYS HORIZONTAL — an inline-flex pill.
+   It is deliberately NOT verticalized when the nav becomes a vertical rail.
+   The radios must be siblings of .wrap at <body> root for ~ to reach them. */
+.lvl-radio { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+.eli5, .eli14, .elii { display: none; }
+#lvl-5:checked  ~ .wrap .eli5  { display: block; }
+#lvl-14:checked ~ .wrap .eli14 { display: block; }
+#lvl-i:checked  ~ .wrap .elii  { display: block; }
+/* Belt-and-braces: if a hand-edited file drops every `checked` attribute the page
+   would render empty. Only applies when nothing is selected, so it never fights
+   an explicit choice. */
+body:not(:has(.lvl-radio:checked)) .eli14 { display: block; }
+
+.levelbar { position: sticky; top: 0; z-index: 30; margin: 0 0 30px; padding: 10px 0 14px;
+  background: linear-gradient(var(--ivory) 74%, transparent); }
+.switch { display: inline-flex; gap: 2px; border: var(--border); border-radius: 999px;
+  padding: 3px; background: var(--white); box-shadow: var(--shadow); }
+.switch label { font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; padding: 8px 18px; border-radius: 999px; cursor: pointer;
+  color: var(--gray-500); -webkit-user-select: none; user-select: none;
+  transition: background .15s ease, color .15s ease; }
+.switch label:hover { color: var(--slate); background: var(--gray-100); }
+#lvl-5:checked  ~ .wrap .switch label[for="lvl-5"],
+#lvl-14:checked ~ .wrap .switch label[for="lvl-14"],
+#lvl-i:checked  ~ .wrap .switch label[for="lvl-i"] { background: var(--slate); color: var(--ivory); }
+#lvl-5:focus-visible  ~ .wrap .switch label[for="lvl-5"],
+#lvl-14:focus-visible ~ .wrap .switch label[for="lvl-14"],
+#lvl-i:focus-visible  ~ .wrap .switch label[for="lvl-i"] { outline: 2px solid var(--clay); outline-offset: 3px; }
+.lvl-note { margin: 12px 2px 0; font-size: 13px; color: var(--gray-500); font-style: italic; }
+
+/* ---------- footer ---------- */
+.doc-footer { margin-top: 72px; padding-top: 24px; border-top: 1px solid var(--gray-300);
+  color: var(--gray-500); font-family: var(--mono); font-size: 12px;
+  display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+
+/* ===========================================================================
+   EXTENDED COMPONENTS — harvested from the html-effectiveness examples.
+   Optional building blocks for richer artifacts: PR reviews, dashboards,
+   editors, decks. See examples/ for each one used in full context.
+   =========================================================================== */
+
+/* --- avatar + author byline --- */
+.author { display: inline-flex; align-items: center; gap: 10px; }
+.avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--oat); color: var(--slate);
+  display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; border: var(--border); flex: none; }
+.author-name { font-weight: 500; color: var(--slate); } .author-sub { font-size: 12px; color: var(--gray-500); }
+
+/* --- branch pill + inline diff stat (PR headers) --- */
+.branch { font-family: var(--mono); font-size: 12.5px; color: var(--gray-700); background: var(--gray-100);
+  border: var(--border); border-radius: var(--radius-row); padding: 6px 10px; }
+.branch .arrow { color: var(--gray-500); margin: 0 6px; }
+.stat { font-family: var(--mono); font-size: 13px; }
+.stat .add, .add-stat { color: var(--olive); font-weight: 600; }
+.stat .del, .del-stat { color: var(--rust); font-weight: 600; }
+.stat .files { color: var(--gray-500); margin-left: 10px; }
+
+/* --- status chips + dots + legend (risk maps) --- */
+.chips, .risk-map { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-row);
+  border: var(--border); font-family: var(--mono); font-size: 12.5px; color: var(--slate); text-decoration: none;
+  background: var(--white); transition: transform .12s; }
+.chip:hover { transform: translateY(-1px); }
+.chip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.chip.safe { background: color-mix(in srgb, var(--olive) 10%, transparent); border-color: color-mix(in srgb, var(--olive) 45%, transparent); } .chip.safe .dot { background: var(--olive); }
+.chip.medium { background: var(--oat); } .chip.medium .dot { background: var(--gray-300); }
+.chip.attention { background: color-mix(in srgb, var(--clay) 12%, transparent); border-color: color-mix(in srgb, var(--clay) 55%, transparent); } .chip.attention .dot { background: var(--clay); }
+.legend { font-size: 12px; color: var(--gray-500); display: flex; gap: 18px; margin-top: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+/* --- file-diff card + header + risk tag --- */
+.file-card { border: var(--border); border-radius: var(--radius-panel); background: var(--white);
+  margin-bottom: 24px; overflow: hidden; scroll-margin-top: 20px; }
+.file-head { padding: 16px 20px; border-bottom: 1.5px solid var(--gray-100); display: flex;
+  align-items: center; justify-content: space-between; gap: 12px; }
+.file-path { font-family: var(--mono); font-size: 13.5px; color: var(--slate); }
+.file-delta { font-family: var(--mono); font-size: 12px; color: var(--gray-500); }
+.file-delta .add { color: var(--olive); } .file-delta .del { color: var(--rust); }
+.file-card .diff { border-radius: 0; margin: 0; }
+.risk-tag { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 3px 8px; border-radius: 6px; font-weight: 600; }
+.risk-tag.safe { background: color-mix(in srgb, var(--olive) 15%, transparent); color: var(--olive); }
+.risk-tag.medium { background: var(--oat); color: var(--gray-700); }
+.risk-tag.attention { background: color-mix(in srgb, var(--clay) 15%, transparent); color: var(--clay); }
+
+/* --- metric tiles (status reports / dashboards) --- */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin: 1.5rem 0; }
+.stat-card { background: var(--white); border: var(--border); border-radius: var(--radius-panel); padding: 20px 22px 18px; }
+.stat-card.warn { border-left: 4px solid var(--clay); padding-left: 19px; }
+.stat-num { font-family: var(--serif); font-size: 44px; font-weight: 500; line-height: 1; color: var(--slate); margin-bottom: 8px; }
+.stat-label { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--gray-500); }
+.stat-delta { font-family: var(--mono); font-size: 11px; margin-top: 6px; }
+.stat-delta.up { color: var(--olive); } .stat-delta.down { color: var(--rust); } .stat-delta.flat { color: var(--gray-500); }
+
+/* --- semantic tags --- */
+.tag { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 11px; padding: 2px 8px;
+  border-radius: 6px; border: 1.5px solid var(--gray-300); background: var(--gray-100); color: var(--gray-700); }
+.tag.bug  { background: color-mix(in srgb, var(--rust) 12%, var(--white)); color: var(--rust); border-color: color-mix(in srgb, var(--rust) 30%, var(--white)); }
+.tag.feat { background: color-mix(in srgb, var(--olive) 14%, var(--white)); color: var(--olive); border-color: color-mix(in srgb, var(--olive) 32%, var(--white)); }
+.tag.chore, .tag.debt { background: var(--gray-100); color: var(--gray-700); border-color: var(--gray-300); }
+
+/* --- toggle switch (editor artifacts) --- */
+.toggle { position: relative; display: inline-block; width: 38px; height: 22px; flex: none; }
+.toggle input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.toggle .track { position: absolute; inset: 0; background: var(--gray-300); border-radius: 999px; transition: background .16s; pointer-events: none; }
+.toggle .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--white); box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: transform .16s; }
+.toggle input:checked + .track { background: var(--olive); }
+.toggle input:checked + .track::after { transform: translateX(16px); }
+
+/* --- kanban / triage board (editor artifacts) --- */
+.board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; align-items: start; margin: 1.5rem 0; }
+.col { background: var(--white); border: var(--border); border-radius: var(--radius-panel); overflow: hidden;
+  display: flex; flex-direction: column; min-height: 180px; }
+.col[data-col="now"]   { border-top: 3px solid var(--clay); }
+.col[data-col="next"]  { border-top: 3px solid var(--olive); }
+.col[data-col="later"] { border-top: 3px solid var(--gray-500); }
+.col-head { display: flex; align-items: baseline; gap: 8px; padding: 14px 14px 10px; border-bottom: 1.5px solid var(--gray-100); }
+.col-head h2, .col-head h3 { font-family: var(--serif); font-weight: 500; font-size: 17px; margin: 0; padding: 0; border: 0; }
+.col-head .count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--gray-500);
+  background: var(--gray-100); border: var(--border); border-radius: 999px; padding: 1px 8px; min-width: 26px; text-align: center; }
+.col-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.ticket { background: var(--white); border: var(--border); border-radius: var(--radius-row); padding: 10px 11px 9px;
+  cursor: grab; user-select: none; transition: border-color .12s, box-shadow .12s; }
+.ticket:hover { border-color: var(--gray-500); box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+@media (max-width: 920px) { .board { grid-template-columns: repeat(2, 1fr); } }
+
+/* --- slide deck (scroll-snap; wrap slides in .deck) --- */
+.deck { scroll-snap-type: y mandatory; }
+.slide { min-height: 100vh; scroll-snap-align: start; display: flex; align-items: center; justify-content: center; padding: 8vh 6vw; }
+.slide-inner { width: 100%; max-width: 780px; }
+.slide.invert { background: var(--slate); color: var(--ivory); }
+.slide.invert h1, .slide.invert h2, .slide.invert h3 { color: var(--ivory); }
+
+/* ---------- utilities ---------- */
+.center { text-align: center; } .nowrap { white-space: nowrap; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 640px) {
+  body { padding: 36px 18px 64px; }
+  .doc-header h1 { font-size: 30px; }
+  .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ---------- print ---------- */
+@media print {
+  body { padding: 0; background: var(--white); }
+  .copy-btn { display: none !important; }
+  .wrap { max-width: 100%; }
+  a { color: var(--slate); border: 0; }
+  pre, .diff, .card, .panel, .callout, table { break-inside: avoid; }
+  .rail, .levelbar { display: none !important; }
+  .layout { display: block !important; }
+  .layout:has(nav.toc) > main, body:has(.layout nav.toc) .wrap { max-width: 100%; }
+  .eli5, .eli14 { display: none !important; }
+  .elii { display: block !important; }   /* print always gets full depth */
+}
+
+</style>
+</head>
+<body>
+<!-- Explanation-level radios. They live at <body> root because the CSS reaches the
+     content with `#lvl-*:checked ~ .wrap …`. Pure CSS — no JS involved. -->
+<input type="radio" name="lvl" id="lvl-5"  class="lvl-radio" aria-label="Explain like I'm 5">
+<input type="radio" name="lvl" id="lvl-14" class="lvl-radio" aria-label="Explain like I'm 14" checked>
+<input type="radio" name="lvl" id="lvl-i"  class="lvl-radio" aria-label="Explain like I'm an intern">
+<div class="wrap">
+
+  <header class="doc-header">
+    <p class="eyebrow">September 17, 2026</p>
+    <h1>Jev in zen-mcp</h1>
+    <p class="subtitle">Implementation + porting reference</p>
+  </header>
+
+  <!-- Explanation-level switch. HOUSE CONVENTION: this control is ALWAYS HORIZONTAL —
+       it is the deliberate exception to the vertical nav rail. Uncomment it (and wrap
+       each section's prose in .eli5 / .eli14 / .elii) for a multi-altitude artifact;
+       delete it and the three radios above for a single-altitude one. The third label
+       is audience-swappable ("Expert", "Architect") — the CLASS NAMES never change.
+  <div class="levelbar">
+    <div class="switch" role="group" aria-label="Explanation level">
+      <label for="lvl-5">ELI5</label>
+      <label for="lvl-14">ELI14</label>
+      <label for="lvl-i">ELII</label>
+    </div>
+    <div class="lvl-note">
+      <div class="eli5">Plain intuition. Everyday analogies, no jargon.</div>
+      <div class="eli14">Correct mechanics, with terms introduced as they are used.</div>
+      <div class="elii">Full depth — real names, trade-offs, edge cases, why it is built this way.</div>
+    </div>
+  </div>
+  -->
+
+  <div class="layout">
+
+    <aside class="rail">
+      <div class="tocbox">
+        <nav class="toc"><div class="label">Contents</div>
+<ul>
+<li><a href="#what-jev-is">What Jev is</a></li>
+<li><a href="#the-division-of-labor">The
+division of labor</a></li>
+<li><a href="#rules-learned-in-this-build">Rules learned in this
+build</a></li>
+<li><a href="#measurements">Measurements</a></li>
+<li><a href="#known-limits">Known limits</a></li>
+<li><a href="#porting-to-another-project">Porting to another project</a></li>
+<li><a href="#keep-or-kill">Keep or kill</a></li>
+</ul>
+        </nav>
+
+      </div>
+    </aside>
+
+    <main>
+<p>Status: implemented 2026-09-16 (<code>interactive_elements</code>,
+<code>wait_for</code> <code>stable</code>, <code>navigate_goal</code>).
+An experiment with a written keep/kill test at the bottom.</p>
+<p>This is also the reference for adding TypeSafe's Jev to other
+projects. The zen-mcp specifics are examples of rules that travel.</p>
+<h2 id="what-jev-is">What Jev is</h2>
+<p>TypeSafe's System One model. You send <strong>state</strong> (text or
+JSON) and named <strong>questions</strong>, and each comes back as a
+typed answer with probabilities:</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Returns</th>
+<th>Use it for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>noul</code></td>
+<td>probability of yes</td>
+<td>a condition: "is this a sign-in page?"</td>
+</tr>
+<tr>
+<td><code>choice</code></td>
+<td>the top option + a probability per option +
+<code>confidence</code></td>
+<td>one of a set: "which control next?" (max <strong>255</strong>
+options)</td>
+</tr>
+<tr>
+<td><code>score</code></td>
+<td>a probability-weighted level on an ordered rubric</td>
+<td>a degree: "how urgent?"</td>
+</tr>
+</tbody>
+</table>
+<p>It does not generate text or explain itself. Measured here: 130–400
+ms per request, roughly 2–3k input tokens for a 40-option choice.</p>
+<h2 id="the-division-of-labor">The division of labor</h2>
+<p>The design rule that made this work, and the one to copy:</p>
+<ul>
+<li><strong>Code narrows.</strong> It builds the candidate set, decides
+what is eligible, and enforces every hard rule (allowlist, redaction,
+withheld kinds, step budget).</li>
+<li><strong>Jev judges.</strong> It makes the calls code can't: which
+control matches the goal, whether we've arrived, whether a control could
+change something.</li>
+<li><strong>Code decides.</strong> Thresholds turn probabilities into
+actions. A probability can only ever <em>stop</em> the loop; it never
+widens what may be done.</li>
+</ul>
+<p>In <code>server/src/goal.ts</code>: <code>eligible()</code> is code,
+<code>stepQuestions()</code> is the Jev ask, and the <code>if</code>
+chain after each reply is code deciding.</p>
+<h2 id="rules-learned-in-this-build">Rules learned in this build</h2>
+<p><strong>1. Jev can only pick what it's shown, so the candidate set is
+the real design work.</strong> A snapshot averages ~500 elements and
+Choice caps at 255, so code filters first (visible, navigational,
+same-host, no action words) and always adds a <code>none</code> option.
+Without <code>none</code>, a page with no right answer still yields a
+confident-looking wrong one.</p>
+<p><strong>2. Ask independent questions of the same state in one
+request; dependent ones need a second.</strong> <code>next</code>,
+<code>done</code> and <code>auth_wall</code> go together: they share
+state and can't see each other's answers. The mutation check
+(<code>mutates</code>) needs the chosen element, which only exists after
+the first reply, so it's a second request. That costs ~200 ms, and only
+for picks that will actually be clicked.</p>
+<p><strong>3. Thresholds encode the cost of being wrong, not a quality
+bar.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Threshold</th>
+<th>Why this side</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>done</code></td>
+<td>≥ 0.8</td>
+<td>A false "done" silently ends short of the goal</td>
+</tr>
+<tr>
+<td>pick probability</td>
+<td>≥ 0.6</td>
+<td>Below it, the second choice is plausible enough to hand back</td>
+</tr>
+<tr>
+<td><code>auth_wall</code></td>
+<td>≥ 0.7</td>
+<td>Sign-in pages need the human regardless</td>
+</tr>
+<tr>
+<td><code>mutates</code></td>
+<td>≥ <strong>0.3</strong> stops</td>
+<td>Asymmetric: a false stop costs one hand-back, a false click can cost
+a client</td>
+</tr>
+</tbody>
+</table>
+<p><strong>4. A weak judgment usually means missing evidence, not a weak
+model.</strong> First live run: after clicking "Pages",
+<code>done</code> came back at <strong>0.42</strong>. The state held
+only title, path and headings. Adding <code>arrived_via</code> (the
+control just clicked and its destination) raised it to
+<strong>0.81</strong> on the same page, and the pick went from 0.71 to
+0.93. Give the question what a person would look at before tuning
+thresholds.</p>
+<p><strong>5. Everything in the request leaves the machine, so gate it
+like a credential.</strong></p>
+<ul>
+<li>A <strong>fail-closed allowlist</strong>: absent means off,
+malformed is an error, unlisted sends nothing and never reads the
+key.</li>
+<li><strong>Redact</strong> every page-derived string
+(<code>redactText</code>: emails, JWTs, UUIDs, keys, long digits).</li>
+<li><strong>Withhold</strong> what you don't need. The first live run
+sent <code>Google Account: &lt;name&gt; (&lt;email&gt;)</code> as a
+candidate. Off-host links are now withheld, and redaction backstops the
+rest.</li>
+<li><strong>Some data never goes, whatever the config says.</strong>
+Financial sites are blocked in code (<code>FINANCIAL_DOMAINS</code> in
+<code>server/src/jev.ts</code>, matched on registrable domain): listing
+one makes the whole allowlist an error, and the host check refuses one
+regardless. Chris's decision, 2026-09-16: financial data is not sent to
+TypeSafe. Extend the set; never add an override.</li>
+</ul>
+<p><strong>6. Inject every dependency; test the "sends nothing" paths
+hardest.</strong> <code>runGoal(deps, options)</code> takes
+page/settle/elements/click/ask/allowHost as functions, so every stop
+rule has a unit test with fakes
+(<code>scripts/interactive-goal.test.mjs</code>). The end-to-end suite
+(<code>scripts/navigate-goal.test.mjs</code>) runs a fake TypeSafe HTTP
+server and a fake <code>security</code> that logs lookups, which is how
+"unlisted host never reads the key" is proven rather than assumed.</p>
+<h2 id="measurements">Measurements</h2>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Choice latency, synthetic 15 / 120 options</td>
+<td>384 ms / 130 ms (warm connection)</td>
+</tr>
+<tr>
+<td>Choice with 500 options</td>
+<td>HTTP 400: at most 255 choices</td>
+</tr>
+<tr>
+<td>Mutation check on <code>Delete endpoint</code></td>
+<td>0.92</td>
+</tr>
+<tr>
+<td><code>interactive_elements</code> vs <code>take_snapshot</code>,
+Search Console overview</td>
+<td>2,909 vs 18,764 characters</td>
+</tr>
+<tr>
+<td>Live: "open the Pages indexing report" (3 runs)</td>
+<td>1 handback before the <code>arrived_via</code> fix; then DONE twice,
+1 click, 3.2–3.6 s, done=0.81</td>
+</tr>
+<tr>
+<td>Live: "open the Sitemaps report"</td>
+<td>DONE, 1 click, 2.6 s, pick p=1.00, done=0.95</td>
+</tr>
+<tr>
+<td>Tokens per 1-click run</td>
+<td>~4.8k over 3 requests</td>
+</tr>
+</tbody>
+</table>
+<p>For comparison, nav-memory telemetry puts the median gap between
+Claude-driven steps at 4.8 s.</p>
+<h2 id="known-limits">Known limits</h2>
+<ul>
+<li><strong><code>done</code> for "Pages" sits at 0.81</strong>, just
+over the line. A goal whose wording differs from the page's own words
+will hand back more often than it finishes.</li>
+<li><strong><code>stable</code> can fire before an SPA's main content
+renders</strong> if the control count doesn't change during the
+transition (the nav stays put). On one run, step 2 counted the same 48
+controls as step 1. The decision still used the new path and title, but
+the candidate list may be stale on such pages.</li>
+<li><strong>Top frame only</strong> for <code>stable</code>; the
+snapshot itself does reach iframes.</li>
+<li><strong>Pricing unchecked.</strong> Tokens are reported per run;
+cost per token isn't known yet.</li>
+<li><strong>Read-only by construction.</strong> No typing, selecting,
+toggling or form flows, and that is not a gap to close here.</li>
+</ul>
+<h2 id="porting-to-another-project">Porting to another project</h2>
+<ol type="1">
+<li>Store the key once: <code>sk TYPESAFE_API_KEY</code>. Consume it
+with <code>secret run -k TYPESAFE_API_KEY -- &lt;cmd&gt;</code>; the
+Python SDK reads that env var by default. Never put it in a file.</li>
+<li>Write down what code decides and what Jev judges before writing a
+question.</li>
+<li>Build the candidate set in code, cap it (255 for Choice), and add a
+<code>none</code>.</li>
+<li>Batch independent questions; make a second request only for
+dependent ones.</li>
+<li>Set each threshold by the cost of being wrong in that direction, and
+let probabilities only narrow what happens.</li>
+<li>If anything user- or client-derived goes into state: allowlist,
+redact, withhold.</li>
+<li>Inject the Jev call so tests can fake it, and test the refusal paths
+end to end.</li>
+<li>Measure latency, tokens and hand-back rate on real inputs before
+deciding it fits.</li>
+</ol>
+<p>Good candidates are judgments over a bounded set: categorizing a
+transaction, routing an intake message, checking a record against its
+source. It's a poor fit where the answer has to be generated rather than
+chosen.</p>
+<h2 id="keep-or-kill">Keep or kill</h2>
+<p>Keep <code>navigate_goal</code> if it is at least <strong>3×
+faster</strong> than the Claude-driven path on three recurring
+<strong>non-financial</strong> reads, with <strong>zero wrong
+clicks</strong>. Search Console is measured. Stripe is out permanently
+(financial). Bing Webmaster Tools is the natural second task, since it's
+the same kind of SEO console; the third should be chosen deliberately,
+because every allowlisted host's control labels leave the machine. If it
+fails the test, <code>interactive_elements</code> and
+<code>stable</code> stand on their own; shelve
+<code>navigate_goal</code> and record why here.</p>
+
+    </main>
+
+  </div>
+
+  <footer class="doc-footer">
+    <span>Jev in zen-mcp</span>
+    <span>September 17, 2026</span>
+  </footer>
+
+</div>
+
+<script>
+// Progressive enhancement ONLY — heading anchors, copy buttons, reading position.
+// Nothing here is load-bearing: the nav and the level switch both work with JS off.
+(function () {
+  var main = document.querySelector('main');
+  if (!main) return;
+
+  function slug(s){return s.toLowerCase().replace(/[^\w]+/g,'-').replace(/^-+|-+$/g,'');}
+  var heads = main.querySelectorAll('h2, h3');
+  var tocItems = [];
+  heads.forEach(function (h) {
+    if (!h.id) h.id = slug(h.textContent);
+    var a = document.createElement('a');
+    a.className = 'anchor'; a.href = '#' + h.id; a.textContent = '#';
+    h.appendChild(a);
+    tocItems.push({ id: h.id, text: h.textContent.replace(/#$/,'').trim(), level: h.tagName.toLowerCase() });
+  });
+
+  // The nav is AUTHORED, not generated. This only fills one in when the file has
+  // none — a legacy artifact or a quick paste. Never build a second one.
+  if (tocItems.length >= 3 && !document.querySelector('nav.toc')) {
+    var nav = document.createElement('nav');
+    nav.className = 'toc';
+    var html = '<div class="label">Contents</div><ul>';
+    tocItems.forEach(function (i) {
+      html += '<li class="' + i.level + '"><a href="#' + i.id + '">' + i.text + '</a></li>';
+    });
+    nav.innerHTML = html + '</ul>';
+    var box = document.querySelector('.rail .tocbox');
+    if (box) box.appendChild(nav); else main.insertBefore(nav, main.firstChild);
+  }
+
+  // Reading position. Recomputed from geometry on each scroll frame, so it is right
+  // scrolling up as well as down. Two cases a fixed probe line gets wrong:
+  //  - the last sections are too short to ever reach the probe (the page bottoms
+  //    out first), so as the page nears its end the probe slides down to the
+  //    viewport's bottom edge, and the final sections light up in turn;
+  //  - a click on a section the page cannot scroll to the top must still light THAT
+  //    link, so a click pins it until the reader scrolls by hand (wheel/touch/key).
+  var links = document.querySelectorAll('.rail .toc a[href^="#"]');
+  if (links.length && window.requestAnimationFrame) {
+    var byId = {};
+    var idOf = function (a) {
+      var id = a.getAttribute('href').slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      return id;
+    };
+    links.forEach(function (a) { byId[idOf(a)] = a; });
+    // Every element a nav link points at, heading or not (a section above <main>,
+    // a <details> block), in document order; headings-only missed those and lit
+    // the first heading instead when the page sat at the top.
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(idOf(a));
+      if (el && targets.indexOf(el) < 0) targets.push(el);
+    });
+    targets.sort(function (x, y) {
+      return x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+
+    if (targets.length) {
+      var PROBE = 120, current = null, pinned = null, ticking = false;
+      var mark = function (id) {
+        if (id === current) return;
+        current = id;
+        links.forEach(function (a) { a.classList.remove('is-active'); });
+        byId[id].classList.add('is-active');
+      };
+      var refresh = function () {
+        ticking = false;
+        if (pinned) return;
+        var vh = window.innerHeight;
+        var left = document.documentElement.scrollHeight - vh - window.scrollY;
+        var probe = PROBE;
+        if (left < vh) probe = PROBE + (vh - PROBE) * (1 - Math.max(left, 0) / vh);
+        var active = targets[0];
+        for (var i = 0; i < targets.length; i++) {
+          if (targets[i].getBoundingClientRect().top <= probe) active = targets[i]; else break;
+        }
+        mark(active.id);
+      };
+      var schedule = function () {
+        if (!ticking) { ticking = true; window.requestAnimationFrame(refresh); }
+      };
+      window.addEventListener('scroll', schedule, { passive: true });
+      window.addEventListener('resize', schedule);
+      links.forEach(function (a) {
+        a.addEventListener('click', function () { pinned = idOf(a); mark(pinned); });
+      });
+      ['wheel', 'touchstart', 'keydown'].forEach(function (ev) {
+        window.addEventListener(ev, function () {
+          if (pinned) { pinned = null; schedule(); }
+        }, { passive: true });
+      });
+      refresh();
+    }
+  }
+
+  document.querySelectorAll('pre').forEach(function (pre) {
+    var b = document.createElement('button');
+    b.className = 'copy-btn'; b.type = 'button'; b.textContent = 'copy';
+    b.addEventListener('click', function () {
+      var code = pre.querySelector('code');
+      var text = code ? code.innerText : pre.innerText;
+      navigator.clipboard.writeText(text).then(function () {
+        b.textContent = 'copied'; setTimeout(function () { b.textContent = 'copy'; }, 1200);
+      });
+    });
+    pre.appendChild(b);
+  });
+})();
+</script>
+</body>
+</html>
