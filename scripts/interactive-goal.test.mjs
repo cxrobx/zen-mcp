@@ -82,6 +82,19 @@ test("field values never appear, only the field's name", () => {
   );
 });
 
+test("visible text is collected in DOM order, invisible nodes and field values excluded", () => {
+  const tree = n("body", {}, [
+    n("h1", { text: "Indexing" }),
+    n("p", { text: "12 pages are not indexed" }),
+    n("div", { text: "hidden banner", computed: { visible: false } }),
+    n("input", { name: "Filter", value: "chris@private.example" }),
+    n("a", { text: "Learn more" }),
+  ]);
+  const r = collectInteractive(tree, []);
+  assert.equal(r.text, "Indexing 12 pages are not indexed Filter Learn more");
+  assert.equal(collectInteractive(null, []).text, "");
+});
+
 test("invisible nodes and media are skipped; roles and onclick-divs are kept", () => {
   const tree = n("body", {}, [
     n("button", { text: "Hidden", computed: { visible: false } }),
@@ -155,15 +168,19 @@ function guardReply(p) {
 /** pages: [{ url, title, elements, go: { uid: nextPageIndex | "throw" } }] */
 function harness(pages, replies, allowed = [HOST]) {
   let current = 0;
-  const calls = { ask: [], click: [] };
+  const calls = { ask: [], click: [], settle: [] };
   const deps = {
     page: async () => ({ url: pages[current].url, title: pages[current].title ?? "" }),
-    settle: async () => true,
+    settle: async (hint) => {
+      calls.settle.push(hint);
+      return { settled: true };
+    },
     elements: async () => ({
       elements: pages[current].elements,
       total: pages[current].elements.length,
       truncated: false,
       headings: [],
+      text: pages[current].text ?? "",
     }),
     click: async (uid) => {
       calls.click.push(uid);
@@ -221,9 +238,17 @@ test("goal: pick, pass the mutation check, click, then judge done", async () => 
   assert.equal(r.steps[0].action, "clicked, navigated");
   assert.equal(r.finalPath, "/acct/webhooks");
   // The first request's state names the page and nothing clicked yet; the second records the click.
-  assert.deepEqual(calls.ask[0].state.clicked_so_far, []);
-  assert.deepEqual(calls.ask[2].state.clicked_so_far, ["Webhooks"]);
+  assert.deepEqual(calls.ask[0].state.recent_actions, []);
+  assert.deepEqual(calls.ask[2].state.recent_actions, [
+    { control: 'link "Webhooks"', destination: "/acct/webhooks", page_changed: true },
+  ]);
   assert.equal(calls.ask[0].state.page.path, "/acct/home");
+  // The first look earns a real quiet window; after a navigating click only a beat.
+  assert.deepEqual(calls.settle, [{ after: "start" }, { after: "click", navigated: true }]);
+  assert.equal(typeof r.steps[0].settleMs, "number");
+  // Without `expect`, done is Jev's word alone and the result says so.
+  assert.equal(r.verified, "jev");
+  assert.match(r.reason, /not verified by code/);
   // "done" is judged with the evidence of how the page was reached.
   assert.equal(calls.ask[0].state.arrived_via, null);
   assert.deepEqual(calls.ask[2].state.arrived_via, { control: 'link "Webhooks"', destination: "/acct/webhooks" });
@@ -232,6 +257,7 @@ test("goal: pick, pass the mutation check, click, then judge done", async () => 
 test("goal: off-host controls are never offered, and emails never leave in any request", async () => {
   const page = home({
     title: "Home - chris@private.example",
+    text: "Signed in as chris@private.example. Webhooks deliver events to your endpoints.",
     elements: [
       el("g1", "Google Account: Chris (chris@private.example)", { kind: "button", href: "accounts.example.net/SignOut", offHost: true }),
       el("p1", "Profile for chris@private.example", { href: "/acct/profile" }),
@@ -253,6 +279,7 @@ test("goal: off-host controls are never offered, and emails never leave in any r
   assert.match(options.p1, /Profile for <email>/);
   assert.match(options.u2, /currently selected/);
   assert.deepEqual(calls.ask[0].state.page.selected, ['link "Webhooks"']);
+  assert.equal(calls.ask[0].state.page.text, "Signed in as <email>. Webhooks deliver events to your endpoints.");
   for (const call of calls.ask) {
     assert.equal(JSON.stringify(call).includes("chris@private.example"), false, "an email left the machine");
   }
@@ -412,6 +439,67 @@ test("goal: a pick that was never offered is refused", async () => {
 });
 
 // --- financial sites never go to TypeSafe ----------------------------------------------
+
+test("goal: a same-page click asks for only a beat, and page_changed records it", async () => {
+  const menu = home({ elements: [el("m1", "Reports", { kind: "button" }), el("u2", "Webhooks", { href: "/acct/webhooks" })], go: {} });
+  const { deps, calls } = harness(
+    [menu],
+    [
+      stepReply({ choice: "m1", probs: { m1: 0.9, u2: 0.05, none: 0.05 } }),
+      guardReply(0.02),
+      stepReply({ choice: "none", probs: { none: 1 } }),
+    ],
+  );
+  const r = await runGoal(deps, OPTS);
+  assert.equal(r.outcome, "handback");
+  assert.equal(r.steps[0].action, "clicked");
+  assert.deepEqual(calls.settle[1], { after: "click", navigated: false });
+  assert.deepEqual(calls.ask[2].state.recent_actions, [{ control: 'button "Reports"', destination: null, page_changed: false }]);
+});
+
+test("goal: the page moving between observation and click hands back without clicking", async () => {
+  const { deps, calls } = harness(
+    [home(), webhooks],
+    [stepReply({ choice: "u2", probs: { u1: 0.03, u2: 0.95, none: 0.02 } }), guardReply(0.04)],
+  );
+  let looks = 0;
+  const observed = deps.page;
+  // The observation sees home; the freshness look right before the click sees a redirect.
+  deps.page = async () => (++looks === 2 ? { url: `https://${HOST}/acct/relogin`, title: "Session" } : observed());
+  const r = await runGoal(deps, OPTS);
+  assert.equal(r.outcome, "handback");
+  assert.match(r.reason, /moved from \/acct\/home to \/acct\/relogin/);
+  assert.equal(r.steps[0].action, "stopped: page moved");
+  assert.equal(calls.click.length, 0);
+});
+
+test("goal: expect verifies the finish in code - met in the text, or in the URL", async () => {
+  const done = stepReply({ done: 0.93, choice: "none", probs: { none: 1 } });
+  const arrived = { ...webhooks, text: "Webhooks - 3 endpoints configured" };
+  for (const [expect, where] of [
+    ["endpoints CONFIGURED", "text"],
+    ["/acct/webhooks", "url"],
+  ]) {
+    const { deps } = harness([arrived], [done]);
+    const r = await runGoal(deps, { ...OPTS, expect });
+    assert.equal(r.outcome, "done", where);
+    assert.equal(r.verified, "expect", where);
+    assert.match(r.reason, /is on the page/);
+    assert.equal(r.steps[0].action, "goal reached, verified");
+  }
+});
+
+test("goal: expect not met hands back even though Jev said done", async () => {
+  const { deps, calls } = harness(
+    [{ ...webhooks, text: "Webhooks - 3 endpoints configured" }],
+    [stepReply({ done: 0.93, choice: "none", probs: { none: 1 } })],
+  );
+  const r = await runGoal(deps, { ...OPTS, expect: "Sitemaps" });
+  assert.equal(r.outcome, "handback");
+  assert.equal(r.verified, null);
+  assert.match(r.reason, /done=0\.93.*"Sitemaps" is not in the URL or visible text/);
+  assert.equal(calls.click.length, 0);
+});
 
 test("financial hosts match on registrable domain, subdomains included, lookalikes not", () => {
   for (const host of [

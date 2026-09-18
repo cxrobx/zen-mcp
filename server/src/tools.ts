@@ -57,7 +57,7 @@ import {
   collectInteractive,
   formatInteractiveLine,
 } from "./interactive.js";
-import { JEV_KEY_NAME, askJev, loadJevConfig, requireJevHost } from "./jev.js";
+import { JEV_KEY_NAME, askJev, loadJevConfig, requireJevHost, warmJev } from "./jev.js";
 import { NavContext, withNavMeta } from "./nav-memory.js";
 import { requireSecretBinding, resolveSecret, scrubSecretValue } from "./secrets.js";
 import {
@@ -485,10 +485,75 @@ function okWithFeedback(text: string, r: InteractionResult): ToolResponse {
 // Controls, not content: a count of these holding still is the "done rendering" signal that
 // survives clocks, spinners and streaming text, which keep innerText moving forever.
 const STABLE_PROBE =
-  "var sel = 'a,button,input,select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[role=combobox]'; return [document.readyState, document.querySelectorAll(sel).length];";
+  "var sel = 'a,button,input,select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[role=combobox]'; return [document.readyState, document.querySelectorAll(sel).length, document.title, (document.body && document.body.innerText || '').length];";
 const STABLE_POLL_MS = 150;
 export const STABLE_DEFAULT_MS = 500;
 const GOAL_SETTLE_TIMEOUT_MS = 8_000;
+// After a click, wait for the page to LEAVE the view that was clicked on, then hold briefly.
+// A quiet window alone is the wrong signal on an SPA. Measured on Search Console 2026-09-18
+// (scratch probe, 100ms samples after clicking "Pages"): the URL flips on the click, the
+// control count wobbles at once (60 -> 58, still the Overview), a loading skeleton then holds
+// a STABLE count of 84 under the old title for ~850ms, and the real page arrives with the
+// title change at ~1.46s. So after a navigating click the signal is the TITLE changing
+// (capped, since some pages keep a static title), followed by a short count hold; a
+// same-page click (menus, panels) only gets a short change-then-hold on the count. The
+// 500ms quiet window this replaced reported "stable" on the old view, and Jev then judged
+// "done" against the Overview it had just left - the visible-text trace made that obvious.
+// The title cap is generous on purpose: swaps measured 1.46-1.97s, and one in three ran past
+// 2.5s (Google queues the route behind its data loads); a slow success beats a hand-back,
+// and a page with a static title only pays the cap once per navigating click.
+export const GOAL_TITLE_CHANGE_CAP_MS = 4_000;
+export const GOAL_CHANGE_AFTER_CLICK_MS = 400;
+export const GOAL_SETTLE_AFTER_NAV_MS = 200;
+export const GOAL_SETTLE_AFTER_CLICK_MS = 150;
+const GOAL_SETTLE_POLL_MS = 50;
+// The post-click hold is a nicety once the change signal has fired; a live-updating page never
+// grants it (one run waited the full 8s settle timeout with the right page already there).
+const GOAL_POST_CLICK_HOLD_TIMEOUT_MS = 1_500;
+
+interface PageFingerprint {
+  count: number | null;
+  title: string | null;
+}
+
+/** One probe: the page's identity as far as "did it change" is concerned. Errors read as unknown. */
+async function pageFingerprint(daemon: DaemonClient, tabId: number): Promise<PageFingerprint | null> {
+  try {
+    const r = await daemon.call<EvaluateScriptResult>(Methods.DomEvaluate, { tabId, code: STABLE_PROBE });
+    if (!Array.isArray(r.result)) return null;
+    const [, count, title] = r.result;
+    return { count: typeof count === "number" ? count : null, title: typeof title === "string" ? title : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve once `differs(now, before)` holds, or after `timeoutMs` (changed: false - the page
+ * may be the same view, or slower than the cap). Never throws: a page that did not change is
+ * a fact for the trace, not an error.
+ */
+async function waitForChange(
+  daemon: DaemonClient,
+  tabId: number,
+  before: PageFingerprint | null,
+  differs: (now: PageFingerprint, before: PageFingerprint) => boolean,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<{ changed: boolean; elapsedMs: number }> {
+  const start = Date.now();
+  if (before === null) return { changed: false, elapsedMs: 0 };
+  while (Date.now() - start < timeoutMs) {
+    const now = await pageFingerprint(daemon, tabId);
+    if (now !== null && differs(now, before)) return { changed: true, elapsedMs: Date.now() - start };
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return { changed: false, elapsedMs: Date.now() - start };
+}
+
+const titleChanged = (now: PageFingerprint, before: PageFingerprint): boolean =>
+  before.title !== null && now.title !== null && now.title !== before.title;
+const countChanged = (now: PageFingerprint, before: PageFingerprint): boolean => now.count !== before.count;
 
 /**
  * Resolve once the page's interactive-control count has held for stableMs and the document
@@ -501,6 +566,7 @@ async function waitForStable(
   tabId: number,
   stableMs: number,
   timeoutMs: number,
+  pollMs: number = STABLE_POLL_MS,
 ): Promise<{ elapsedMs: number; count: number }> {
   const start = Date.now();
   const deadline = start + timeoutMs;
@@ -529,7 +595,7 @@ async function waitForStable(
       return { elapsedMs: now - start, count };
     }
     if (state) lastState = state;
-    await new Promise((r) => setTimeout(r, STABLE_POLL_MS));
+    await new Promise((r) => setTimeout(r, pollMs));
   }
   throw new ZenToolError(
     "TIMEOUT",
@@ -1806,7 +1872,7 @@ export function registerTools(
     {
       title: "Navigate toward a goal (Jev)",
       description:
-        "Reach a READ-ONLY destination on one tab - e.g. \"open the Pages indexing report\" - with TypeSafe's Jev model choosing each click, so you are not consulted per step. Only clicks links, buttons, tabs and menu items: never types, fills, selects or toggles, withholds controls labeled with action words (delete, save, pay, send...), and asks Jev whether the chosen control could change anything before clicking. Stops and hands back on: goal reached, a sign-in page, Jev picking none, low confidence, a repeated click, leaving the allowlisted host, or maxSteps. Returns a per-step trace. Runs ONLY on hosts listed in ~/.config/zen-mcp/jev.json, because the goal, page title/path/headings and control labels are sent to api.typesafe.ai. Never use it for forms, payments, or anything that changes state.",
+        "Reach a READ-ONLY destination on one tab - e.g. \"open the Pages indexing report\" - with TypeSafe's Jev model choosing each click, so you are not consulted per step. Only clicks links, buttons, tabs and menu items: never types, fills, selects or toggles, withholds controls labeled with action words (delete, save, pay, send...), and asks Jev whether the chosen control could change anything before clicking. Stops and hands back on: goal reached, a sign-in page, Jev picking none, low confidence, a repeated click, leaving the allowlisted host, or maxSteps. Returns a per-step trace. Pass expect to have code verify the finish. Runs ONLY on hosts listed in ~/.config/zen-mcp/jev.json, because the goal, page title/path/headings, visible text (redacted, 2,000 chars) and control labels are sent to api.typesafe.ai. Never use it for forms, payments, or anything that changes state.",
       inputSchema: {
         ...targetShape(),
         goal: z.string().min(3).max(300).describe("Where to end up, in plain words"),
@@ -1823,9 +1889,17 @@ export function registerTools(
           .max(1)
           .optional()
           .describe(`Stop when the best pick's probability is below this (default ${GOAL_DEFAULT_MIN_CONFIDENCE})`),
+        expect: z
+          .string()
+          .min(2)
+          .max(200)
+          .optional()
+          .describe(
+            "Code-side finish check: text that must appear in the final URL or visible page text (case-insensitive) for the run to count as done. Without it, done is Jev's judgment alone and the result says so.",
+          ),
       },
     },
-    async ({ pageIdx, tabId, expectTabSet, goal, maxSteps, minConfidence }) => {
+    async ({ pageIdx, tabId, expectTabSet, goal, maxSteps, minConfidence, expect }) => {
       let apiKey = "";
       try {
         const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
@@ -1845,18 +1919,37 @@ export function registerTools(
               : `Nothing was sent. Store the TypeSafe key with sk ${JEV_KEY_NAME}; never paste it into the conversation.`,
           );
         }
+        // The first settle is the one moment the loop has idle time; spend it on the TLS handshake.
+        warmJev(apiKey);
+        let beforeClick: PageFingerprint | null = null;
         const result = await runGoal(
           {
             page: async () => {
               const current = await resolveTarget(daemon, { tabId: target });
               return { url: effectivePageUrl(current), title: current.title ?? "" };
             },
-            settle: async () => {
+            settle: async (hint) => {
+              let quietMs = STABLE_DEFAULT_MS;
+              let pollMs = STABLE_POLL_MS;
+              const notes: string[] = [];
+              if (hint.after === "click") {
+                // A page whose title the probe cannot read (or that keeps one static title)
+                // falls back to the weaker count-change signal rather than waiting out the cap.
+                const byTitle = hint.navigated && beforeClick?.title !== null;
+                const change = byTitle
+                  ? await waitForChange(daemon, target, beforeClick, titleChanged, GOAL_TITLE_CHANGE_CAP_MS, GOAL_SETTLE_POLL_MS)
+                  : await waitForChange(daemon, target, beforeClick, countChanged, GOAL_CHANGE_AFTER_CLICK_MS, GOAL_SETTLE_POLL_MS);
+                notes.push(`${byTitle ? "title" : "controls"} ${change.changed ? "changed after" : "unchanged for"} ${change.elapsedMs}ms`);
+                quietMs = hint.navigated ? GOAL_SETTLE_AFTER_NAV_MS : GOAL_SETTLE_AFTER_CLICK_MS;
+                pollMs = GOAL_SETTLE_POLL_MS;
+              }
               try {
-                await waitForStable(daemon, target, STABLE_DEFAULT_MS, GOAL_SETTLE_TIMEOUT_MS);
-                return true;
+                const holdTimeout = hint.after === "click" ? GOAL_POST_CLICK_HOLD_TIMEOUT_MS : GOAL_SETTLE_TIMEOUT_MS;
+                const r = await waitForStable(daemon, target, quietMs, holdTimeout, pollMs);
+                notes.push(`${r.count} controls held ${quietMs}ms at ${r.elapsedMs}ms`);
+                return { settled: true, detail: notes.join(", ") };
               } catch (err) {
-                if (err instanceof ZenToolError && err.code === "TIMEOUT") return false;
+                if (err instanceof ZenToolError && err.code === "TIMEOUT") return { settled: false, detail: notes.join(", ") };
                 throw err;
               }
             },
@@ -1865,6 +1958,8 @@ export function registerTools(
               return collectInteractive(snap.tree, snap.uidMap, { limit: Number.MAX_SAFE_INTEGER, pageUrl: url });
             },
             click: async (uid) => {
+              // What the page looked like when it was decided on; the next settle waits to leave it.
+              beforeClick = await pageFingerprint(daemon, target);
               const r = await daemon.call<InteractionResult>(Methods.DomClick, { tabId: target, uid });
               return { navigated: r.feedback?.navigated === true };
             },
@@ -1875,6 +1970,7 @@ export function registerTools(
             goal,
             maxSteps: maxSteps ?? GOAL_DEFAULT_MAX_STEPS,
             minConfidence: minConfidence ?? GOAL_DEFAULT_MIN_CONFIDENCE,
+            expect,
           },
         );
         const response = withNavMeta(ok(formatGoalResult(result)), {

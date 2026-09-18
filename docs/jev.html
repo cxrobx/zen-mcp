@@ -440,7 +440,7 @@ body:not(:has(.lvl-radio:checked)) .eli14 { display: block; }
 <div class="wrap">
 
   <header class="doc-header">
-    <p class="eyebrow">September 17, 2026</p>
+    <p class="eyebrow">September 18, 2026</p>
     <h1>Jev in zen-mcp</h1>
     <p class="subtitle">Implementation + porting reference</p>
   </header>
@@ -487,6 +487,8 @@ filters that kill a candidate before the shape test</a></li>
 <li><a href="#tripwires--revisit-only-when-one-of-these-is-true">Tripwires —
 revisit only when one of these is true</a></li>
 </ul></li>
+<li><a href="#the-loop-reworked-2026-09-18">The loop, reworked
+(2026-09-18)</a></li>
 <li><a href="#porting-to-another-project">Porting to another project</a></li>
 <li><a href="#keep-or-kill">Keep or kill</a></li>
 </ul>
@@ -497,8 +499,10 @@ revisit only when one of these is true</a></li>
 
     <main>
 <p>Status: implemented 2026-09-16 (<code>interactive_elements</code>,
-<code>wait_for</code> <code>stable</code>, <code>navigate_goal</code>).
-An experiment with a written keep/kill test at the bottom.</p>
+<code>wait_for</code> <code>stable</code>, <code>navigate_goal</code>);
+loop reworked 2026-09-18 after comparing it with browser-use's
+<code>jev-ultrafast</code> (§ <em>The loop, reworked</em>). An
+experiment with a written keep/kill test at the bottom.</p>
 <p><strong>Before proposing a second integration, read § <em>Where else
 — the survey and the verdict</em>. The answer as of 2026-09-17 is no,
 and the three tripwires that would change it are listed there. Don't
@@ -611,6 +615,13 @@ control just clicked and its destination) raised it to
 <strong>0.81</strong> on the same page, and the pick went from 0.71 to
 0.93. Give the question what a person would look at before tuning
 thresholds.</p>
+<p>The 2026-09-18 sequel: adding the page's visible text (2,000 chars,
+redacted) made <code>done</code> <strong>drop</strong> to 0.71–0.77 on
+the same goal, and it was right to. The trace showed the text was the
+Overview page's: the loop had judged "done" on the page it had just left
+(rule 8 below). With the real page in evidence, <code>done</code> is
+0.95–0.98. More evidence is only ever better; if it lowers a score, the
+score was wrong before.</p>
 <p><strong>5. Everything in the request leaves the machine, so gate it
 like a credential.</strong></p>
 <ul>
@@ -638,6 +649,28 @@ rule has a unit test with fakes
 (<code>scripts/navigate-goal.test.mjs</code>) runs a fake TypeSafe HTTP
 server and a fake <code>security</code> that logs lookups, which is how
 "unlisted host never reads the key" is proven rather than assumed.</p>
+<p><strong>7. "Done" is a judgment, not evidence; let code verify when
+it can.</strong> <code>expect</code> (text that must appear in the final
+URL or visible text) turns Jev's <code>done</code> into a code-checked
+finish. Without it the result is marked <code>DONE (unverified)</code>.
+jev-ultrafast does the same with an independent checker after the run,
+and says outright that its <code>DONE</code> choice is never evidence of
+success.</p>
+<p><strong>8. After a click, wait for the page to LEAVE the old view; a
+quiet window is the wrong signal on an SPA.</strong> Measured with
+<code>scripts/probe-transition.mjs</code> on Search Console: the URL
+flips on the click, the control count wobbles at once (60 → 58, still
+the Overview), a loading skeleton then holds a <strong>stable</strong>
+count under the old title for ~850 ms, and the real page arrives with
+the <strong>title change</strong> at 1.5–2.0 s (up to 4 s when Google
+queues the route behind its data loads). The 500 ms quiet window
+reported "stable" on the old view every time, so the baseline's
+<code>done=0.80</code> was judged against the wrong page, and its
+2.7–3.3 s runs were fast by measuring nothing. The loop now waits for
+the title to change (capped at 4 s, falling back to a count change when
+the title is unavailable), then a 200 ms count hold capped at 1.5 s. The
+trace prints where each wait went. If a wait constant looks tunable, run
+the probe first.</p>
 <h2 id="measurements">Measurements</h2>
 <table>
 <thead>
@@ -677,22 +710,54 @@ Search Console overview</td>
 <td>Tokens per 1-click run</td>
 <td>~4.8k over 3 requests</td>
 </tr>
+<tr>
+<td><strong>2026-09-18 baseline, 6 runs</strong> (before the
+rework)</td>
+<td>Pages: 1 of 3 done, <code>done</code> 0.78–0.80, 2.7–3.3 s.
+Sitemaps: 3 of 3, 2.5–3.3 s. Every step-2 judgment was made on the stale
+Overview view</td>
+</tr>
+<tr>
+<td><strong>2026-09-18 after the rework, 7 runs</strong></td>
+<td><strong>7 of 7 done</strong>, <code>done</code> 0.95–0.98, real page
+in evidence. Pages 4.1–4.9 s (one 6.6 s, one 16 s before the hold cap),
+Sitemaps 4.7–6.1 s. Of that, 1.5–4.0 s is Google swapping the route
+after the click, ~0.5 s the first settle, ~0.6–0.9 s Jev over 3
+requests, ~0.5 s snapshots and RPCs</td>
+</tr>
+<tr>
+<td>Jev first request, cold vs warmed</td>
+<td>~700 ms cold; 130–350 ms after a throwaway GET during the first
+settle (<code>warmJev</code>)</td>
+</tr>
+<tr>
+<td>Tokens per 1-click run, with visible text</td>
+<td>~5.4–5.9k over 3 requests (was ~4.8k)</td>
+</tr>
+<tr>
+<td>jev-ultrafast, Google Flights, for scale</td>
+<td>11 actions in 7.07 s; Jev median 178 ms over 17 requests (3.7 s of
+the 7); ~640 ms per action all-in</td>
+</tr>
 </tbody>
 </table>
 <p>For comparison, nav-memory telemetry puts the median gap between
 Claude-driven steps at 4.8 s.</p>
 <h2 id="known-limits">Known limits</h2>
 <ul>
-<li><strong><code>done</code> for "Pages" sits at 0.81</strong>, just
-over the line. A goal whose wording differs from the page's own words
-will hand back more often than it finishes.</li>
-<li><strong><code>stable</code> can fire before an SPA's main content
-renders</strong> if the control count doesn't change during the
-transition (the nav stays put). On one run, step 2 counted the same 48
-controls as step 1. The decision still used the new path and title, but
-the candidate list may be stale on such pages.</li>
-<li><strong>Top frame only</strong> for <code>stable</code>; the
-snapshot itself does reach iframes.</li>
+<li><strong>A one-click run is ~4–5 s on Search Console, and most of it
+is Google.</strong> The route swap after a click takes 1.5–4 s before
+the page exists to judge. Any driver, Claude included, pays that; the
+keep/kill comparison has to include it on both sides.</li>
+<li><strong>A page with a static title pays the 4 s title cap on every
+navigating click</strong> before falling through to the count hold.
+Reduce the cap only with a probe trace in hand.</li>
+<li><strong><code>stable</code> (the tool) is still a quiet
+window</strong> and still fires on an SPA's old view. Use it after a
+click only when you know the count changes; otherwise wait for text or a
+selector.</li>
+<li><strong>Top frame only</strong> for <code>stable</code> and the
+fingerprint probe; the snapshot itself does reach iframes.</li>
 <li><strong>Pricing unchecked.</strong> Tokens are reported per run;
 cost per token isn't known yet.</li>
 <li><strong>Read-only by construction.</strong> No typing, selecting,
@@ -809,6 +874,92 @@ volume</strong> — the LSA line across <em>many</em> contractors, not
 one.</li>
 </ol>
 <p>None are true today. Until one is, the answer is no.</p>
+<h2 id="the-loop-reworked-2026-09-18">The loop, reworked
+(2026-09-18)</h2>
+<p>Prompted by browser-use's <a
+href="https://github.com/browser-use/jev-ultrafast"><code>jev-ultrafast</code></a>:
+Zürich → London on Google Flights in 7.1 s, 11 actions, one Jev request
+per decision at 178 ms median. Same API and the same latency band as
+ours; the difference was entirely in the loop around it.</p>
+<p><strong>What it does better, and what was taken:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Theirs</th>
+<th>Ours, after</th>
+<th>Taken?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Event-based waits: two frames or 50 ms; 200 ms for a combobox</td>
+<td>Title-change wait after a navigating click, then a 200 ms hold;
+count-change then 150 ms after a same-page click</td>
+<td>Yes, in the form the probe justified (rule 8) — their 50 ms would
+have judged the old view here too</td>
+</tr>
+<tr>
+<td>Operation and every target head in <strong>one</strong> request; the
+executor reads only the matching head</td>
+<td>Still two requests when a click will happen: <code>next</code> +
+<code>done</code> + <code>auth_wall</code>, then <code>mutates</code> on
+the pick</td>
+<td>No — the guard needs the pick, and ~200 ms is its price</td>
+</tr>
+<tr>
+<td>Visible text and a <code>recent_actions</code> history with
+<code>page_changed</code> in state</td>
+<td><code>page.text</code> (2,000 chars, redacted) and
+<code>recent_actions</code> replacing <code>clicked_so_far</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Semantic freshness guards before acting (document, URL, target,
+nearby context)</td>
+<td>URL re-read right before the click; the uid itself fails loud if the
+node is gone</td>
+<td>Partly</td>
+</tr>
+<tr>
+<td><code>DONE</code> never trusted; an independent checker verifies the
+outcome</td>
+<td><code>expect</code> verifies in code; otherwise the result says
+<code>unverified</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>No allowlist, no redaction, no mutation guard, no financial block; a
+demo tab in a disposable profile</td>
+<td>All four kept, unchanged</td>
+<td>No, deliberately</td>
+</tr>
+<tr>
+<td><code>TYPE_TEXT</code> via a second small LLM (Mercury 2.5)</td>
+<td>Read-only by construction</td>
+<td>No</td>
+</tr>
+<tr>
+<td>~5.3k tokens per request (every target head in every request)</td>
+<td>~1.8–3.1k per request</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The honest read on speed.</strong> The baseline looked 1.5 s
+faster than the reworked loop and was wrong three times out of six. The
+rework is not slower; it is the first version that waits for the page to
+exist. What it removed: ~1 s of quiet-window overhead per click, and
+~500 ms off the first Jev request. What it cannot remove: the site's own
+render time, which jev-ultrafast pays too (Flights' final "Search →
+results" interval alone was 1.9 s of its 7).</p>
+<p><strong>Not done, on purpose:</strong> the operation-as-choice
+restructure
+(<code>CLICK</code>/<code>WAIT</code>/<code>DONE</code>/<code>BLOCKED</code>
+in one distribution). It reads cleaner than two nouls plus a
+<code>none</code>, but it changes what every threshold means, and the
+thresholds encode the cost of being wrong on a live browser. Revisit
+only if <code>none</code> picks start landing where <code>done</code>
+should.</p>
 <h2 id="porting-to-another-project">Porting to another project</h2>
 <ol type="1">
 <li>Store the key once: <code>sk TYPESAFE_API_KEY</code>. Consume it
@@ -828,6 +979,10 @@ redact, withhold.</li>
 end to end.</li>
 <li>Measure latency, tokens and hand-back rate on real inputs before
 deciding it fits.</li>
+<li>After an action, wait for the page to <em>leave</em> the state you
+acted on (title, URL, a known element), never for a quiet window; then
+verify the finish in code when you can name what "arrived" looks
+like.</li>
 </ol>
 <p>Good candidates are judgments over a bounded set: categorizing a
 transaction, routing an intake message, checking a record against its
@@ -856,13 +1011,15 @@ second use case, not after.</li>
 <p>Keep <code>navigate_goal</code> if it is at least <strong>3×
 faster</strong> than the Claude-driven path on three recurring
 <strong>non-financial</strong> reads, with <strong>zero wrong
-clicks</strong>. Search Console is measured. Stripe is out permanently
-(financial). Bing Webmaster Tools is the natural second task, since it's
-the same kind of SEO console; the third should be chosen deliberately,
-because every allowlisted host's control labels leave the machine. If it
-fails the test, <code>interactive_elements</code> and
-<code>stable</code> stand on their own; shelve
-<code>navigate_goal</code> and record why here.</p>
+clicks</strong> — measuring both paths from the same starting page to
+the same <em>rendered</em> destination, since the site's own swap time
+(1.5–4 s here) is paid by either driver. Search Console is measured.
+Stripe is out permanently (financial). Bing Webmaster Tools is the
+natural second task, since it's the same kind of SEO console; the third
+should be chosen deliberately, because every allowlisted host's control
+labels leave the machine. If it fails the test,
+<code>interactive_elements</code> and <code>stable</code> stand on their
+own; shelve <code>navigate_goal</code> and record why here.</p>
 
     </main>
 
@@ -870,7 +1027,7 @@ fails the test, <code>interactive_elements</code> and
 
   <footer class="doc-footer">
     <span>Jev in zen-mcp</span>
-    <span>September 17, 2026</span>
+    <span>September 18, 2026</span>
   </footer>
 
 </div>

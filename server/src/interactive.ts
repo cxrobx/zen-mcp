@@ -19,6 +19,8 @@ export const INTERACTIVE_DEFAULT_LIMIT = 200;
 // Jev's Choice primitive rejects more than 255 options (measured: HTTP 400 "Must have at
 // most 255 choices"); navigate_goal reserves one slot for "none".
 export const INTERACTIVE_MAX_LIMIT = 254;
+/** Visible-text budget carried in InteractiveCollection.text. */
+export const TEXT_MAX = 2_000;
 
 const LABEL_MAX = 80;
 const CONTEXT_MAX = 60;
@@ -89,6 +91,12 @@ export interface InteractiveCollection {
   truncated: boolean;
   /** The first few h1-h3 labels, in DOM order - a cheap "where am I" signal. */
   headings: string[];
+  /**
+   * The page's visible words, in DOM order, clipped to TEXT_MAX. Field values are never
+   * included (only a field's name). The evidence a "done?" judgment needs and the headings alone
+   * did not carry - see docs/jev.md rule 4.
+   */
+  text: string;
 }
 
 export interface CollectOptions {
@@ -269,11 +277,13 @@ export function collectInteractive(
     if (el.label && (seen.get(`${el.kind}\u0000${el.label}`) ?? 0) > 1) el.duplicate = true;
   }
 
+  const text = tree ? clip(subtreeText(tree, TEXT_MAX, (n) => n.computed?.visible === false), TEXT_MAX) : "";
   return {
     elements: found.slice(0, Math.max(0, limit)),
     total: found.length,
     truncated: found.length > limit,
     headings,
+    text,
   };
 }
 

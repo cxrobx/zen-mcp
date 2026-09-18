@@ -1,6 +1,6 @@
 # Jev in zen-mcp
 
-Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`). An experiment with a written keep/kill test at the bottom.
+Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`); loop reworked 2026-09-18 after comparing it with browser-use's `jev-ultrafast` (§ *The loop, reworked*). An experiment with a written keep/kill test at the bottom.
 
 **Before proposing a second integration, read § *Where else — the survey and the verdict*. The answer as of 2026-09-17 is no, and the three tripwires that would change it are listed there. Don't re-derive it.**
 
@@ -48,6 +48,8 @@ A snapshot averages ~500 elements and Choice caps at 255, so code filters first 
 **4. A weak judgment usually means missing evidence, not a weak model.**
 First live run: after clicking "Pages", `done` came back at **0.42**. The state held only title, path and headings. Adding `arrived_via` (the control just clicked and its destination) raised it to **0.81** on the same page, and the pick went from 0.71 to 0.93. Give the question what a person would look at before tuning thresholds.
 
+The 2026-09-18 sequel: adding the page's visible text (2,000 chars, redacted) made `done` **drop** to 0.71–0.77 on the same goal, and it was right to. The trace showed the text was the Overview page's: the loop had judged "done" on the page it had just left (rule 8 below). With the real page in evidence, `done` is 0.95–0.98. More evidence is only ever better; if it lowers a score, the score was wrong before.
+
 **5. Everything in the request leaves the machine, so gate it like a credential.**
 - A **fail-closed allowlist**: absent means off, malformed is an error, unlisted sends nothing and never reads the key.
 - **Redact** every page-derived string (`redactText`: emails, JWTs, UUIDs, keys, long digits).
@@ -56,6 +58,12 @@ First live run: after clicking "Pages", `done` came back at **0.42**. The state 
 
 **6. Inject every dependency; test the "sends nothing" paths hardest.**
 `runGoal(deps, options)` takes page/settle/elements/click/ask/allowHost as functions, so every stop rule has a unit test with fakes (`scripts/interactive-goal.test.mjs`). The end-to-end suite (`scripts/navigate-goal.test.mjs`) runs a fake TypeSafe HTTP server and a fake `security` that logs lookups, which is how "unlisted host never reads the key" is proven rather than assumed.
+
+**7. "Done" is a judgment, not evidence; let code verify when it can.**
+`expect` (text that must appear in the final URL or visible text) turns Jev's `done` into a code-checked finish. Without it the result is marked `DONE (unverified)`. jev-ultrafast does the same with an independent checker after the run, and says outright that its `DONE` choice is never evidence of success.
+
+**8. After a click, wait for the page to LEAVE the old view; a quiet window is the wrong signal on an SPA.**
+Measured with `scripts/probe-transition.mjs` on Search Console: the URL flips on the click, the control count wobbles at once (60 → 58, still the Overview), a loading skeleton then holds a **stable** count under the old title for ~850 ms, and the real page arrives with the **title change** at 1.5–2.0 s (up to 4 s when Google queues the route behind its data loads). The 500 ms quiet window reported "stable" on the old view every time, so the baseline's `done=0.80` was judged against the wrong page, and its 2.7–3.3 s runs were fast by measuring nothing. The loop now waits for the title to change (capped at 4 s, falling back to a count change when the title is unavailable), then a 200 ms count hold capped at 1.5 s. The trace prints where each wait went. If a wait constant looks tunable, run the probe first.
 
 ## Measurements
 
@@ -68,14 +76,20 @@ First live run: after clicking "Pages", `done` came back at **0.42**. The state 
 | Live: "open the Pages indexing report" (3 runs) | 1 handback before the `arrived_via` fix; then DONE twice, 1 click, 3.2–3.6 s, done=0.81 |
 | Live: "open the Sitemaps report" | DONE, 1 click, 2.6 s, pick p=1.00, done=0.95 |
 | Tokens per 1-click run | ~4.8k over 3 requests |
+| **2026-09-18 baseline, 6 runs** (before the rework) | Pages: 1 of 3 done, `done` 0.78–0.80, 2.7–3.3 s. Sitemaps: 3 of 3, 2.5–3.3 s. Every step-2 judgment was made on the stale Overview view |
+| **2026-09-18 after the rework, 7 runs** | **7 of 7 done**, `done` 0.95–0.98, real page in evidence. Pages 4.1–4.9 s (one 6.6 s, one 16 s before the hold cap), Sitemaps 4.7–6.1 s. Of that, 1.5–4.0 s is Google swapping the route after the click, ~0.5 s the first settle, ~0.6–0.9 s Jev over 3 requests, ~0.5 s snapshots and RPCs |
+| Jev first request, cold vs warmed | ~700 ms cold; 130–350 ms after a throwaway GET during the first settle (`warmJev`) |
+| Tokens per 1-click run, with visible text | ~5.4–5.9k over 3 requests (was ~4.8k) |
+| jev-ultrafast, Google Flights, for scale | 11 actions in 7.07 s; Jev median 178 ms over 17 requests (3.7 s of the 7); ~640 ms per action all-in |
 
 For comparison, nav-memory telemetry puts the median gap between Claude-driven steps at 4.8 s.
 
 ## Known limits
 
-- **`done` for "Pages" sits at 0.81**, just over the line. A goal whose wording differs from the page's own words will hand back more often than it finishes.
-- **`stable` can fire before an SPA's main content renders** if the control count doesn't change during the transition (the nav stays put). On one run, step 2 counted the same 48 controls as step 1. The decision still used the new path and title, but the candidate list may be stale on such pages.
-- **Top frame only** for `stable`; the snapshot itself does reach iframes.
+- **A one-click run is ~4–5 s on Search Console, and most of it is Google.** The route swap after a click takes 1.5–4 s before the page exists to judge. Any driver, Claude included, pays that; the keep/kill comparison has to include it on both sides.
+- **A page with a static title pays the 4 s title cap on every navigating click** before falling through to the count hold. Reduce the cap only with a probe trace in hand.
+- **`stable` (the tool) is still a quiet window** and still fires on an SPA's old view. Use it after a click only when you know the count changes; otherwise wait for text or a selector.
+- **Top frame only** for `stable` and the fingerprint probe; the snapshot itself does reach iframes.
 - **Pricing unchecked.** Tokens are reported per run; cost per token isn't known yet.
 - **Read-only by construction.** No typing, selecting, toggling or form flows, and that is not a gap to close here.
 
@@ -118,6 +132,27 @@ The move on all of them is the same, and it doesn't need Jev: **decompose into n
 
 None are true today. Until one is, the answer is no.
 
+## The loop, reworked (2026-09-18)
+
+Prompted by browser-use's [`jev-ultrafast`](https://github.com/browser-use/jev-ultrafast): Zürich → London on Google Flights in 7.1 s, 11 actions, one Jev request per decision at 178 ms median. Same API and the same latency band as ours; the difference was entirely in the loop around it.
+
+**What it does better, and what was taken:**
+
+| Theirs | Ours, after | Taken? |
+|---|---|---|
+| Event-based waits: two frames or 50 ms; 200 ms for a combobox | Title-change wait after a navigating click, then a 200 ms hold; count-change then 150 ms after a same-page click | Yes, in the form the probe justified (rule 8) — their 50 ms would have judged the old view here too |
+| Operation and every target head in **one** request; the executor reads only the matching head | Still two requests when a click will happen: `next` + `done` + `auth_wall`, then `mutates` on the pick | No — the guard needs the pick, and ~200 ms is its price |
+| Visible text and a `recent_actions` history with `page_changed` in state | `page.text` (2,000 chars, redacted) and `recent_actions` replacing `clicked_so_far` | Yes |
+| Semantic freshness guards before acting (document, URL, target, nearby context) | URL re-read right before the click; the uid itself fails loud if the node is gone | Partly |
+| `DONE` never trusted; an independent checker verifies the outcome | `expect` verifies in code; otherwise the result says `unverified` | Yes |
+| No allowlist, no redaction, no mutation guard, no financial block; a demo tab in a disposable profile | All four kept, unchanged | No, deliberately |
+| `TYPE_TEXT` via a second small LLM (Mercury 2.5) | Read-only by construction | No |
+| ~5.3k tokens per request (every target head in every request) | ~1.8–3.1k per request | — |
+
+**The honest read on speed.** The baseline looked 1.5 s faster than the reworked loop and was wrong three times out of six. The rework is not slower; it is the first version that waits for the page to exist. What it removed: ~1 s of quiet-window overhead per click, and ~500 ms off the first Jev request. What it cannot remove: the site's own render time, which jev-ultrafast pays too (Flights' final "Search → results" interval alone was 1.9 s of its 7).
+
+**Not done, on purpose:** the operation-as-choice restructure (`CLICK`/`WAIT`/`DONE`/`BLOCKED` in one distribution). It reads cleaner than two nouls plus a `none`, but it changes what every threshold means, and the thresholds encode the cost of being wrong on a live browser. Revisit only if `none` picks start landing where `done` should.
+
 ## Porting to another project
 
 1. Store the key once: `sk TYPESAFE_API_KEY`. Consume it with `secret run -k TYPESAFE_API_KEY -- <cmd>`; the Python SDK reads that env var by default. Never put it in a file.
@@ -128,6 +163,7 @@ None are true today. Until one is, the answer is no.
 6. If anything user- or client-derived goes into state: allowlist, redact, withhold.
 7. Inject the Jev call so tests can fake it, and test the refusal paths end to end.
 8. Measure latency, tokens and hand-back rate on real inputs before deciding it fits.
+9. After an action, wait for the page to *leave* the state you acted on (title, URL, a known element), never for a quiet window; then verify the finish in code when you can name what "arrived" looks like.
 
 Good candidates are judgments over a bounded set: categorizing a transaction, routing an intake message, checking a record against its source. It's a poor fit where the answer has to be generated rather than chosen.
 
@@ -137,4 +173,4 @@ Two notes that read against the general Jev literature. For the vendor-level tre
 
 ## Keep or kill
 
-Keep `navigate_goal` if it is at least **3× faster** than the Claude-driven path on three recurring **non-financial** reads, with **zero wrong clicks**. Search Console is measured. Stripe is out permanently (financial). Bing Webmaster Tools is the natural second task, since it's the same kind of SEO console; the third should be chosen deliberately, because every allowlisted host's control labels leave the machine. If it fails the test, `interactive_elements` and `stable` stand on their own; shelve `navigate_goal` and record why here.
+Keep `navigate_goal` if it is at least **3× faster** than the Claude-driven path on three recurring **non-financial** reads, with **zero wrong clicks** — measuring both paths from the same starting page to the same *rendered* destination, since the site's own swap time (1.5–4 s here) is paid by either driver. Search Console is measured. Stripe is out permanently (financial). Bing Webmaster Tools is the natural second task, since it's the same kind of SEO console; the third should be chosen deliberately, because every allowlisted host's control labels leave the machine. If it fails the test, `interactive_elements` and `stable` stand on their own; shelve `navigate_goal` and record why here.

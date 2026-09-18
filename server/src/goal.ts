@@ -38,10 +38,20 @@ export interface GoalPage {
   title: string;
 }
 
+/**
+ * Why the loop is waiting. The first look at a page earns a real quiet window; after a click
+ * the wait is only as long as the page needs to react (a navigation is already committed by
+ * the time the click RPC returns, a same-page click needs a beat for menus and panels).
+ */
+export type SettleHint = { after: "start" } | { after: "click"; navigated: boolean };
+
 export interface GoalDeps {
   page(): Promise<GoalPage>;
-  /** Resolves true once the page stopped re-rendering, false if it never settled. */
-  settle(): Promise<boolean>;
+  /**
+   * Resolves once the page stopped re-rendering (`settled: false` if it never did). `detail`
+   * is a short human note on where the time went, for the trace.
+   */
+  settle(hint: SettleHint): Promise<{ settled: boolean; detail?: string }>;
   elements(pageUrl: string): Promise<InteractiveCollection>;
   click(uid: string): Promise<{ navigated: boolean }>;
   ask(state: unknown, questions: Record<string, JevQuestion>): Promise<JevResponse>;
@@ -53,7 +63,21 @@ export interface GoalOptions {
   goal: string;
   maxSteps: number;
   minConfidence: number;
+  /**
+   * Code-owned finish check: after Jev judges the goal reached, this must appear in the final
+   * URL or visible text (case-insensitive) or the run hands back. Without it, "done" is Jev's
+   * word alone, and the trace says so.
+   */
+  expect?: string;
 }
+
+export interface RecentAction {
+  control: string;
+  destination: string | null;
+  page_changed: boolean;
+}
+
+export const RECENT_ACTIONS_MAX = 10;
 
 export interface GoalPick {
   uid: string;
@@ -70,6 +94,9 @@ export interface GoalStep {
   settled: boolean;
   found: number;
   offered: number;
+  /** Time spent waiting for the page before this step's observation. */
+  settleMs: number;
+  settleDetail?: string;
   withheld: number;
   done: number;
   authWall: number;
@@ -90,6 +117,8 @@ export interface GoalAlternative {
 export interface GoalResult {
   outcome: "done" | "handback";
   reason: string;
+  /** How "done" was established: by code against `expect`, or by Jev's judgment alone. */
+  verified: "expect" | "jev" | null;
   steps: GoalStep[];
   clicks: number;
   totalMs: number;
@@ -177,16 +206,23 @@ function stepQuestions(candidates: InteractiveElement[]): Record<string, JevQues
 export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<GoalResult> {
   const started = Date.now();
   const steps: GoalStep[] = [];
-  const clickedSoFar: string[] = [];
+  const recentActions: RecentAction[] = [];
   let arrivedVia: { control: string; destination: string | null } | null = null;
+  let settleHint: SettleHint = { after: "start" };
   let clicks = 0;
   let lastPickKey = "";
   let finalUrl = "";
   let finalPath = "/";
 
-  const finish = (outcome: GoalResult["outcome"], reason: string, alternatives: GoalAlternative[] = []): GoalResult => ({
+  const finish = (
+    outcome: GoalResult["outcome"],
+    reason: string,
+    alternatives: GoalAlternative[] = [],
+    verified: GoalResult["verified"] = null,
+  ): GoalResult => ({
     outcome,
     reason,
+    verified,
     steps,
     clicks,
     totalMs: Date.now() - started,
@@ -197,7 +233,9 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
 
   for (let n = 1; ; n++) {
     try {
-      const settled = await deps.settle();
+      const settleStarted = Date.now();
+      const { settled, detail: settleDetail } = await deps.settle(settleHint);
+      const settleMs = Date.now() - settleStarted;
       const page = await deps.page();
       const normalized = normalizeUrl(page.url);
       const host = normalized?.host ?? null;
@@ -220,6 +258,8 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
         settled,
         found: collection.total,
         offered: candidates.length,
+        settleMs,
+        ...(settleDetail ? { settleDetail } : {}),
         withheld: collection.elements.length - allowed.length,
         done: 0,
         authWall: 0,
@@ -238,10 +278,11 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
           title: safe(page.title.replace(/\s+/g, " ").trim().slice(0, 120)),
           headings: collection.headings.map(safe),
           selected: collection.elements.filter((el) => el.selected).slice(0, 5).map(controlText),
+          text: safe(collection.text ?? ""),
         },
         arrived_via: arrivedVia,
         // A copy: the state handed to ask must not change under it when the next click lands.
-        clicked_so_far: [...clickedSoFar],
+        recent_actions: recentActions.slice(-RECENT_ACTIONS_MAX).map((a) => ({ ...a })),
       };
       const reply = await deps.ask(state, stepQuestions(candidates));
       charge(step, reply);
@@ -249,8 +290,21 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
       step.authWall = noul(reply, "auth_wall");
 
       if (step.done >= DONE_THRESHOLD) {
+        if (options.expect) {
+          const needle = options.expect.toLowerCase();
+          const met = page.url.toLowerCase().includes(needle) || (collection.text ?? "").toLowerCase().includes(needle);
+          if (!met) {
+            step.action = "stopped: Jev said done, expectation not met";
+            return finish(
+              "handback",
+              `Jev judged the goal reached (done=${fmt(step.done)}) but ${JSON.stringify(options.expect)} is not in the URL or visible text`,
+            );
+          }
+          step.action = "goal reached, verified";
+          return finish("done", `goal reached: ${JSON.stringify(options.expect)} is on the page (done=${fmt(step.done)})`, [], "expect");
+        }
         step.action = "goal reached";
-        return finish("done", `Jev judged the goal reached (done=${fmt(step.done)})`);
+        return finish("done", `Jev judged the goal reached (done=${fmt(step.done)}) - Jev's judgment, not verified by code`, [], "jev");
       }
       if (step.authWall >= AUTH_WALL_THRESHOLD) {
         step.action = "stopped: sign-in page";
@@ -344,16 +398,32 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
         );
       }
 
+      // Freshness: the decision was made about the page as observed. If the tab moved on its
+      // own since then (a redirect, a late navigation), the pick is about a page that is gone.
+      const before = await deps.page();
+      if (before.url !== page.url) {
+        step.action = "stopped: page moved";
+        return finish(
+          "handback",
+          `the page moved from ${finalPath} to ${normalizeUrl(before.url)?.path ?? before.url} between observing and clicking - not clicked`,
+          alternatives,
+        );
+      }
+
+      let navigated = false;
       try {
         const clicked = await deps.click(picked.uid);
-        step.action = clicked.navigated ? "clicked, navigated" : "clicked";
+        navigated = clicked.navigated;
+        step.action = navigated ? "clicked, navigated" : "clicked";
       } catch (err) {
         step.action = "click failed";
         return finish("handback", `clicking ${picked.uid} failed (${(err as Error).message}) - the page may have re-rendered`);
       }
       clicks += 1;
-      clickedSoFar.push(safe(picked.label || picked.href || picked.uid));
-      arrivedVia = { control: controlText(picked), destination: picked.href ? safe(picked.href) : null };
+      const destination = picked.href ? safe(picked.href) : null;
+      recentActions.push({ control: controlText(picked), destination, page_changed: navigated });
+      arrivedVia = { control: controlText(picked), destination };
+      settleHint = { after: "click", navigated };
       lastPickKey = pickKey;
     } catch (err) {
       // Before any click nothing has happened, so the error is the whole answer. After a
@@ -368,13 +438,14 @@ export function formatGoalResult(result: GoalResult): string {
   const requests = result.steps.reduce((sum, s) => sum + s.requests, 0);
   const jevMs = result.steps.reduce((sum, s) => sum + s.jevMs, 0);
   const tokens = result.steps.reduce((sum, s) => sum + s.tokens, 0);
+  const settleMs = result.steps.reduce((sum, s) => sum + s.settleMs, 0);
   const lines = [
-    `navigate_goal ${result.outcome === "done" ? "DONE" : "HANDED BACK"}: ${result.reason}`,
-    `${result.clicks} click${result.clicks === 1 ? "" : "s"}, ${(result.totalMs / 1000).toFixed(1)}s total (Jev ${jevMs}ms over ${requests} request${requests === 1 ? "" : "s"}, ${tokens.toLocaleString("en-US")} tokens) - now at ${result.finalPath}`,
+    `navigate_goal ${result.outcome === "done" ? (result.verified === "expect" ? "DONE (verified)" : "DONE (unverified)") : "HANDED BACK"}: ${result.reason}`,
+    `${result.clicks} click${result.clicks === 1 ? "" : "s"}, ${(result.totalMs / 1000).toFixed(1)}s total (Jev ${jevMs}ms over ${requests} request${requests === 1 ? "" : "s"}, ${tokens.toLocaleString("en-US")} tokens; waiting on the page ${settleMs}ms) - now at ${result.finalPath}`,
   ];
   for (const s of result.steps) {
     lines.push(
-      `step ${s.n} ${s.path}${s.settled ? "" : " (page never settled)"} - offered ${s.offered} of ${s.found} controls${s.withheld ? ` (${s.withheld} withheld: fields, toggles, off-host links, action words)` : ""} - Jev ${s.jevMs}ms, ${s.tokens.toLocaleString("en-US")} tok`,
+      `step ${s.n} ${s.path}${s.settled ? "" : " (page never settled)"} - waited ${s.settleMs}ms${s.settleDetail ? ` (${s.settleDetail})` : ""} - offered ${s.offered} of ${s.found} controls${s.withheld ? ` (${s.withheld} withheld: fields, toggles, off-host links, action words)` : ""} - Jev ${s.jevMs}ms, ${s.tokens.toLocaleString("en-US")} tok`,
     );
     let detail = `  done=${fmt(s.done)} auth_wall=${fmt(s.authWall)}`;
     if (s.pick) {

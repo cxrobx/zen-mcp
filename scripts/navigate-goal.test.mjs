@@ -237,7 +237,7 @@ class McpClient {
 
 // --- fake TypeSafe -------------------------------------------------------------------
 
-const jev = { requests: [], replies: [] };
+const jev = { requests: [], replies: [], warmups: [] };
 
 function noul(p) {
   return { type: "noul", noul: p };
@@ -284,6 +284,13 @@ before(async () => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
+      if (req.method !== "POST") {
+        // The connection warm-up: no body, no page data, and it must not consume a scripted reply.
+        jev.warmups.push({ method: req.method, auth: req.headers.authorization, raw });
+        res.writeHead(405, { "Content-Type": "application/json" });
+        res.end("{}");
+        return;
+      }
       jev.requests.push({ auth: req.headers.authorization, body: JSON.parse(raw) });
       const next = jev.replies.shift() ?? { status: 500, body: { detail: "test scripted no reply" } };
       res.writeHead(next.status, { "Content-Type": "application/json" });
@@ -349,6 +356,7 @@ function resetWorld() {
   ext.reset();
   jev.requests.length = 0;
   jev.replies.length = 0;
+  jev.warmups.length = 0;
 }
 
 test("interactive_elements lists controls with labels, destinations and row context, never values", async () => {
@@ -445,14 +453,22 @@ test("navigate_goal reaches the goal: pick, mutation check, click, done", async 
   );
   const r = await clients.main.callTool("navigate_goal", { tabId: 301, goal: "open the webhooks page" });
   assert.equal(r.isError, false, r.text);
-  assert.match(r.text, /^navigate_goal DONE/);
-  assert.match(r.text, /1 click, .* 3 requests, 396 tokens\) - now at \/acct\/webhooks/);
+  assert.match(r.text, /^navigate_goal DONE \(unverified\)/);
+  assert.match(r.text, /1 click, .* 3 requests, 396 tokens; waiting on the page \d+ms\) - now at \/acct\/webhooks/);
+  // The first observation waits a full quiet window; after the navigating click only ~100ms.
+  const waited = [...r.text.matchAll(/waited (\d+)ms/g)].map((m) => Number(m[1]));
+  assert.equal(waited.length, 2);
+  assert.ok(waited[0] >= 500, `first wait ${waited[0]}ms`);
+  assert.ok(waited[1] < 400, `post-click wait ${waited[1]}ms`);
   assert.match(r.text, /pick=9_hooks link "Webhooks" p=0\.94 in nav mutates=0\.02 -> clicked, navigated/);
 
   const clicks = ext.requestsFor("dom.click");
   assert.deepEqual(clicks.map((c) => c.params.uid), ["9_hooks"]);
 
   assert.equal(jev.requests.length, 3);
+  // The TLS warm-up went out during the first settle, carried nothing, and used the key.
+  assert.equal(jev.warmups.length, 1);
+  assert.deepEqual(jev.warmups[0], { method: "GET", auth: `Bearer ${FAKE_KEY}`, raw: "" });
   for (const req of jev.requests) {
     assert.equal(req.auth, `Bearer ${FAKE_KEY}`);
     assert.equal(req.body.model, "jev-latest");
@@ -464,7 +480,11 @@ test("navigate_goal reaches the goal: pick, mutation check, click, done", async 
   assert.ok(options.includes("9_edit1"));
   for (const withheld of ["9_search", "9_delete", "9_account"]) assert.equal(options.includes(withheld), false, withheld);
   assert.deepEqual(jev.requests[2].body.state.arrived_via, { control: 'link "Webhooks"', destination: "/acct/webhooks" });
+  assert.deepEqual(jev.requests[2].body.state.recent_actions, [
+    { control: 'link "Webhooks"', destination: "/acct/webhooks", page_changed: true },
+  ]);
   assert.equal(jev.requests[0].body.state.page.path, "/acct/home");
+  assert.match(jev.requests[2].body.state.page.text, /Webhooks Add endpoint/);
   assert.equal(r.text.includes(FAKE_KEY), false);
 });
 

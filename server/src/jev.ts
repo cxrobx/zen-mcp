@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { normalizeHost, registrableDomain } from "@zen-mcp/shared/nav-redact";
@@ -215,6 +215,38 @@ function checkShape(body: unknown, questions: Record<string, JevQuestion>): JevR
 }
 
 /**
+ * Open the TLS connection to TypeSafe ahead of the first real request. Node's fetch pools
+ * connections per origin, so a throwaway request during the page's first settle turns the
+ * measured ~700ms cold first request into a warm ~200ms one. Nothing page-derived is sent;
+ * the result is ignored and a failure here is not an error (the real request reports its own).
+ */
+export function warmJev(apiKey: string): void {
+  const endpoint = process.env.ZEN_MCP_TYPESAFE_URL ?? DEFAULT_ENDPOINT;
+  fetch(endpoint, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(5_000),
+  })
+    .then((r) => r.body?.cancel())
+    .catch(() => undefined);
+}
+
+/**
+ * Diagnostic trace of what leaves the machine: when ZEN_MCP_JEV_TRACE names a file, every
+ * request body and answer set is appended as one JSON line. Bodies are already redacted
+ * (that is the caller's contract), so the file is safe to read but still off by default.
+ */
+function traceJev(record: Record<string, unknown>): void {
+  const path = process.env.ZEN_MCP_JEV_TRACE;
+  if (!path) return;
+  try {
+    appendFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`);
+  } catch {
+    // A trace that cannot be written must never fail the run.
+  }
+}
+
+/**
  * One System One request. Questions in a request are answered independently and in
  * parallel, so everything that can be asked of the same state belongs in one call.
  * 429/529 get a single delayed retry; anything else fails loudly on the first try.
@@ -267,6 +299,7 @@ export async function askJev(
     }
     const result = checkShape(parsed, questions);
     result.latencyMs = Date.now() - started;
+    traceJev({ latencyMs: result.latencyMs, usage: result.usage, state, questions, answers: result.answers });
     return result;
   }
 }

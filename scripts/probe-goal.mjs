@@ -6,7 +6,7 @@
 //   node scripts/probe-goal.mjs \
 //     --container CXVentures \
 //     --url "https://search.google.com/search-console?resource_id=sc-domain:cxventures.io" \
-//     --goal "open the Pages indexing report"
+//     --goal "open the Pages indexing report" [--expect "Page indexing"] [--quiet]
 //
 // Needs: the host in ~/.config/zen-mcp/jev.json, TYPESAFE_API_KEY in the Keychain (sk), and
 // the container logged in to the site. Sends that page's control labels to api.typesafe.ai.
@@ -28,6 +28,8 @@ const container = arg("container", "CXVentures");
 const url = arg("url", "https://search.google.com/search-console?resource_id=sc-domain:cxventures.io");
 const goal = arg("goal", "open the Pages indexing report");
 const maxSteps = Number.parseInt(arg("max-steps", "5"), 10);
+const expect = arg("expect", "");
+const quiet = process.argv.includes("--quiet");
 const keep = process.argv.includes("--keep");
 
 class McpClient {
@@ -101,13 +103,15 @@ try {
   const settled = await mcp.tool("wait_for", { tabId, condition: "stable", stableMs: 800, timeout: 20_000 });
   console.log(`\n--- wait_for stable (${settled.ms}ms) ---\n${settled.text}`);
 
-  const snapshot = await mcp.tool("take_snapshot", { tabId });
-  const listing = await mcp.tool("interactive_elements", { tabId });
-  console.log(`\n--- size: take_snapshot ${snapshot.text.length} chars vs interactive_elements ${listing.text.length} chars ---`);
-  console.log(listing.text.split("\n").slice(0, 25).join("\n"));
-  if (listing.text.split("\n").length > 25) console.log("...");
+  if (!quiet) {
+    const snapshot = await mcp.tool("take_snapshot", { tabId });
+    const listing = await mcp.tool("interactive_elements", { tabId });
+    console.log(`\n--- size: take_snapshot ${snapshot.text.length} chars vs interactive_elements ${listing.text.length} chars ---`);
+    console.log(listing.text.split("\n").slice(0, 25).join("\n"));
+    if (listing.text.split("\n").length > 25) console.log("...");
+  }
 
-  const result = await mcp.tool("navigate_goal", { tabId, goal, maxSteps }, 180_000);
+  const result = await mcp.tool("navigate_goal", { tabId, goal, maxSteps, ...(expect ? { expect } : {}) }, 180_000);
   console.log(`\n--- navigate_goal (${result.ms}ms wall) ---\n${result.text}`);
 } finally {
   if (tabId !== null && !keep) {
