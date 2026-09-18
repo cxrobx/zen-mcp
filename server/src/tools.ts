@@ -485,7 +485,7 @@ function okWithFeedback(text: string, r: InteractionResult): ToolResponse {
 // Controls, not content: a count of these holding still is the "done rendering" signal that
 // survives clocks, spinners and streaming text, which keep innerText moving forever.
 const STABLE_PROBE =
-  "var sel = 'a,button,input,select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[role=combobox]'; return [document.readyState, document.querySelectorAll(sel).length, document.title, (document.body && document.body.innerText || '').length];";
+  "var sel = 'a,button,input,select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[role=combobox]'; return [document.readyState, document.querySelectorAll(sel).length, document.title, (document.body && document.body.innerText || '').length, location.pathname];";
 const STABLE_POLL_MS = 150;
 export const STABLE_DEFAULT_MS = 500;
 const GOAL_SETTLE_TIMEOUT_MS = 8_000;
@@ -514,6 +514,7 @@ const GOAL_POST_CLICK_HOLD_TIMEOUT_MS = 1_500;
 interface PageFingerprint {
   count: number | null;
   title: string | null;
+  path: string | null;
 }
 
 /** One probe: the page's identity as far as "did it change" is concerned. Errors read as unknown. */
@@ -521,8 +522,12 @@ async function pageFingerprint(daemon: DaemonClient, tabId: number): Promise<Pag
   try {
     const r = await daemon.call<EvaluateScriptResult>(Methods.DomEvaluate, { tabId, code: STABLE_PROBE });
     if (!Array.isArray(r.result)) return null;
-    const [, count, title] = r.result;
-    return { count: typeof count === "number" ? count : null, title: typeof title === "string" ? title : null };
+    const [, count, title, , path] = r.result;
+    return {
+      count: typeof count === "number" ? count : null,
+      title: typeof title === "string" ? title : null,
+      path: typeof path === "string" ? path : null,
+    };
   } catch {
     return null;
   }
@@ -540,20 +545,24 @@ async function waitForChange(
   differs: (now: PageFingerprint, before: PageFingerprint) => boolean,
   timeoutMs: number,
   pollMs: number,
-): Promise<{ changed: boolean; elapsedMs: number }> {
+): Promise<{ changed: boolean; elapsedMs: number; now: PageFingerprint | null }> {
   const start = Date.now();
-  if (before === null) return { changed: false, elapsedMs: 0 };
+  if (before === null) return { changed: false, elapsedMs: 0, now: null };
+  let now: PageFingerprint | null = null;
   while (Date.now() - start < timeoutMs) {
-    const now = await pageFingerprint(daemon, tabId);
-    if (now !== null && differs(now, before)) return { changed: true, elapsedMs: Date.now() - start };
+    now = await pageFingerprint(daemon, tabId);
+    if (now !== null && differs(now, before)) return { changed: true, elapsedMs: Date.now() - start, now };
     await new Promise((r) => setTimeout(r, pollMs));
   }
-  return { changed: false, elapsedMs: Date.now() - start };
+  return { changed: false, elapsedMs: Date.now() - start, now };
 }
 
 const titleChanged = (now: PageFingerprint, before: PageFingerprint): boolean =>
   before.title !== null && now.title !== null && now.title !== before.title;
-const countChanged = (now: PageFingerprint, before: PageFingerprint): boolean => now.count !== before.count;
+const pathChanged = (now: PageFingerprint, before: PageFingerprint): boolean =>
+  before.path !== null && now.path !== null && now.path !== before.path;
+const anythingChanged = (now: PageFingerprint, before: PageFingerprint): boolean =>
+  now.count !== before.count || titleChanged(now, before) || pathChanged(now, before);
 
 /**
  * Resolve once the page's interactive-control count has held for stableMs and the document
@@ -1933,13 +1942,18 @@ export function registerTools(
               let pollMs = STABLE_POLL_MS;
               const notes: string[] = [];
               if (hint.after === "click") {
-                // A page whose title the probe cannot read (or that keeps one static title)
-                // falls back to the weaker count-change signal rather than waiting out the cap.
-                const byTitle = hint.navigated && beforeClick?.title !== null;
-                const change = byTitle
-                  ? await waitForChange(daemon, target, beforeClick, titleChanged, GOAL_TITLE_CHANGE_CAP_MS, GOAL_SETTLE_POLL_MS)
-                  : await waitForChange(daemon, target, beforeClick, countChanged, GOAL_CHANGE_AFTER_CLICK_MS, GOAL_SETTLE_POLL_MS);
-                notes.push(`${byTitle ? "title" : "controls"} ${change.changed ? "changed after" : "unchanged for"} ${change.elapsedMs}ms`);
+                // First: anything at all moved (count, title, path)? Then: if this was a navigation -
+                // reported by the click, or seen as a path change here, since the click feedback races
+                // a full page load and reports navigated=false on Wikipedia - wait for the TITLE, the
+                // signal that survives SPA skeletons. A page whose title the probe cannot read, or that
+                // keeps one static title, falls through after the cap rather than never.
+                const first = await waitForChange(daemon, target, beforeClick, anythingChanged, GOAL_CHANGE_AFTER_CLICK_MS, GOAL_SETTLE_POLL_MS);
+                notes.push(`${first.changed ? "page changed after" : "nothing changed for"} ${first.elapsedMs}ms`);
+                const navigated = hint.navigated || (first.now !== null && beforeClick !== null && pathChanged(first.now, beforeClick));
+                if (navigated && beforeClick?.title !== null && !(first.now && beforeClick && titleChanged(first.now, beforeClick))) {
+                  const t = await waitForChange(daemon, target, beforeClick, titleChanged, GOAL_TITLE_CHANGE_CAP_MS, GOAL_SETTLE_POLL_MS);
+                  notes.push(`title ${t.changed ? "changed after" : "unchanged for"} ${t.elapsedMs}ms`);
+                }
                 quietMs = hint.navigated ? GOAL_SETTLE_AFTER_NAV_MS : GOAL_SETTLE_AFTER_CLICK_MS;
                 pollMs = GOAL_SETTLE_POLL_MS;
               }

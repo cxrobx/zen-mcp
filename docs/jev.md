@@ -80,6 +80,8 @@ Measured with `scripts/probe-transition.mjs` on Search Console: the URL flips on
 | **2026-09-18 after the rework, 7 runs** | **7 of 7 done**, `done` 0.95–0.98, real page in evidence. Pages 4.1–4.9 s (one 6.6 s, one 16 s before the hold cap), Sitemaps 4.7–6.1 s. Of that, 1.5–4.0 s is Google swapping the route after the click, ~0.5 s the first settle, ~0.6–0.9 s Jev over 3 requests, ~0.5 s snapshots and RPCs |
 | Jev first request, cold vs warmed | ~700 ms cold; 130–350 ms after a throwaway GET during the first settle (`warmJev`) |
 | Tokens per 1-click run, with visible text | ~5.4–5.9k over 3 requests (was ~4.8k) |
+| **Fast-site A/B, Wikipedia** ("open the Talk page" from the Gödel article, old loop in a worktree vs new, 3 runs each) | Old: 2 of 3 done, 3.7–3.9 s; the failure was the same stale-view bug (clicked Talk, observed the still-loading original page, `done` 0.65, tried the same link again). New: 3 of 3, 3.3–3.4 s, `done` 0.98–0.99, first Jev request ~250 ms vs ~600 ms. Of the new clock: ~0.55 s first settle, ~0.8 s Jev, ~0.7 s post-click, ~1.3 s snapshots of a 2,026-control page |
+| Wikipedia, ambiguous goal ("the incompleteness theorems article") | Both loops hand back about half the time at p≈0.55: 2,026 controls, capped at 254 in DOM order, several lookalike links. A candidate-set limit, not a loop one |
 | jev-ultrafast, Google Flights, for scale | 11 actions in 7.07 s; Jev median 178 ms over 17 requests (3.7 s of the 7); ~640 ms per action all-in |
 
 For comparison, nav-memory telemetry puts the median gap between Claude-driven steps at 4.8 s.
@@ -90,6 +92,8 @@ For comparison, nav-memory telemetry puts the median gap between Claude-driven s
 - **A page with a static title pays the 4 s title cap on every navigating click** before falling through to the count hold. Reduce the cap only with a probe trace in hand.
 - **`stable` (the tool) is still a quiet window** and still fires on an SPA's old view. Use it after a click only when you know the count changes; otherwise wait for text or a selector.
 - **Top frame only** for `stable` and the fingerprint probe; the snapshot itself does reach iframes.
+- **The click feedback races a full page load**, so `navigated` is `false` for a real navigation on Wikipedia. The settle detects the path change itself and waits for the title anyway; don't rely on `navigated` alone.
+- **Big pages are capped, in DOM order.** 2,026 controls on a Wikipedia article become 254 candidates, and the snapshot of such a page is ~1.3 s of a 3.4 s run. A visible-only, single-call snapshot (what jev-ultrafast does) is the next lever if the keep/kill test passes.
 - **Pricing unchecked.** Tokens are reported per run; cost per token isn't known yet.
 - **Read-only by construction.** No typing, selecting, toggling or form flows, and that is not a gap to close here.
 
