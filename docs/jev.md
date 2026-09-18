@@ -1,6 +1,6 @@
 # Jev in zen-mcp
 
-Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`); loop reworked 2026-09-18 after comparing it with browser-use's `jev-ultrafast` (§ *The loop, reworked*). An experiment with a written keep/kill test at the bottom.
+Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`); loop reworked 2026-09-18 after comparing it with browser-use's `jev-ultrafast` (§ *The loop, reworked*). In use since 2026-09-18 under a written tripwire at the bottom (§ *In use, with a tripwire*).
 
 **Before proposing a second integration, read § *Where else — the survey and the verdict*. The answer as of 2026-09-17 is no, and the three tripwires that would change it are listed there. Don't re-derive it.**
 
@@ -86,7 +86,7 @@ Measured with `scripts/probe-transition.mjs` on Search Console: the URL flips on
 
 ### The Claude-driven baseline, measured (2026-09-18)
 
-The keep/kill test compares against "the Claude-driven path", which until now was a proxy: nav-memory's 4.8 s median gap between steps. It is now measured directly. A general-purpose subagent was handed the **same goal in the same words**, on the **same pre-settled tab**, with the zen tools and `navigate_goal` forbidden, and bracketed its own browser work with millisecond timestamps. Three runs per site, same build on both sides.
+The original keep/kill test compared against "the Claude-driven path", which until now was a proxy: nav-memory's 4.8 s median gap between steps. It is now measured directly. A general-purpose subagent was handed the **same goal in the same words**, on the **same pre-settled tab**, with the zen tools and `navigate_goal` forbidden, and bracketed its own browser work with millisecond timestamps. Three runs per site, same build on both sides.
 
 | Goal | navigate_goal (median of 3) | Claude-driven (median of 3) | Ratio |
 |---|---|---|---|
@@ -103,12 +103,12 @@ The keep/kill test compares against "the Claude-driven path", which until now wa
 
 ## Known limits
 
-- **A one-click run is ~4–5 s on Search Console, and most of it is Google.** The route swap after a click takes 1.5–4 s before the page exists to judge. Any driver, Claude included, pays that; the keep/kill comparison has to include it on both sides.
+- **A one-click run is ~4–5 s on Search Console, and most of it is Google.** The route swap after a click takes 1.5–4 s before the page exists to judge. Any driver, Claude included, pays that; any speed comparison has to include it on both sides.
 - **A page with a static title pays the 4 s title cap on every navigating click** before falling through to the count hold. Reduce the cap only with a probe trace in hand.
 - **`stable` (the tool) is still a quiet window** and still fires on an SPA's old view. Use it after a click only when you know the count changes; otherwise wait for text or a selector.
 - **Top frame only** for `stable` and the fingerprint probe; the snapshot itself does reach iframes.
 - **The click feedback races a full page load**, so `navigated` is `false` for a real navigation on Wikipedia. The settle detects the path change itself and waits for the title anyway; don't rely on `navigated` alone.
-- **Big pages are capped, in DOM order.** 2,026 controls on a Wikipedia article become 254 candidates, and the snapshot of such a page is ~1.3 s of a 3.4 s run. A visible-only, single-call snapshot (what jev-ultrafast does) is the next lever if the keep/kill test passes.
+- **Big pages are capped, in DOM order.** 2,026 controls on a Wikipedia article become 254 candidates, and the snapshot of such a page is ~1.3 s of a 3.4 s run. A visible-only, single-call snapshot (what jev-ultrafast does) is the next lever, and not worth its extension re-sign today: the measured ratio passes without it, and on console pages an observation is ~200 ms.
 - **Pricing unchecked.** Tokens are reported per run; cost per token isn't known yet.
 - **Read-only by construction.** No typing, selecting, toggling or form flows, and that is not a gap to close here.
 
@@ -132,7 +132,7 @@ Not "Jev is bad." **Jev is built for someone paying per decision at volume.** Th
 | **QES / LSA responder** | urgency × $value · service category · technician class · is the six-field intake complete | The shape is exact — this *is* the differentiator sold against Housecall Pro. But the budget is **60 s**, which haiku clears by 20×, and one contractor is not volume. **Correction to an earlier read here: "sub-60s is contractual, therefore binding" was wrong** — a constraint met 20× over is not a constraint |
 | **jobscan** | score a posting against the rubric | **The only live signal.** haiku workers tripped the Claude *session limit* — the one place the subscription stops being free, because the constraint turns into rate, not dollars. Still weak: 3 workers, a weekly sweep |
 | **PocketBuddy values alignment** | merchant ↔ a stated value | Genuine fan-out shape, already schema-gated — but single-user volume. Not the bottleneck |
-| **`navigate_goal`** | built | Let the keep/kill test below finish; don't expand the allowlist to feed it |
+| **`navigate_goal`** | built, in use | Runs under the tripwire at the bottom; the allowlist grows on demand, never to feed it |
 
 The move on all of them is the same, and it doesn't need Jev: **decompose into named typed questions on haiku first.** The decision-native-models guide's own strongest finding is that *decomposition, not the model,* produced most of the measured gain — every comparison model got more accurate, faster and cheaper inside an explicit decomposed workflow. Do that and the Jev swap stays a one-line, reversible margin lever for later.
 
@@ -190,8 +190,27 @@ Two notes that read against the general Jev literature. For the vendor-level tre
 
 - **Here Jev *drives* the loop rather than sitting beside one.** The usual framing puts cheap typed judgments in five seats around a *generative* agent loop: completion check, tool gate, trace grade, loop detection, escalation. `navigate_goal` has no LLM in the loop at all — Jev is the controller and code is everything else. That is cheaper again, and it has a different failure mode: nothing in the loop can explain itself, so the run's own record is the only evidence there is. That is why `runGoal` returns `steps[]` and the probe prints it. Build the trace before the second use case, not after.
 
-## Keep or kill
+## In use, with a tripwire
 
-Keep `navigate_goal` if it is at least **3× faster** than the Claude-driven path on three recurring **non-financial** reads, with **zero wrong clicks** — measuring both paths from the same starting page to the same *rendered* destination, since the site's own swap time (1.5–4 s here) is paid by either driver.
+**Decision, 2026-09-18 (Chris): `navigate_goal` is in use. The formal keep/kill test is retired.**
 
-**Progress, 2026-09-18: one of three reads passes.** Search Console clears the bar at **3.1×** with zero wrong clicks across every run (see *The Claude-driven baseline, measured*). Wikipedia clears it at 5.7× but is a test fixture, not one of Chris's recurring reads, so it does not count toward the three; it is kept as the fast-site control that shows what the ratio looks like when the site is not the bottleneck. **Two genuine recurring reads still needed.** Stripe is out permanently (financial). Bing Webmaster Tools is the natural second task, since it's the same kind of SEO console; the third should be chosen deliberately, because every allowlisted host's control labels leave the machine. Use the same A/B protocol: a subagent given the same goal in the same words on the same pre-settled tab, `navigate_goal` forbidden, timing its own browser work. If it fails the test, `interactive_elements` and `stable` stand on their own; shelve `navigate_goal` and record why here.
+The test asked for 3× faster than the Claude-driven path on three recurring non-financial reads with zero wrong clicks. Search Console passed at 3.1×, and the fast-site control at 5.7× (see *The Claude-driven baseline, measured*). The remaining two reads were not run, on purpose: the test existed to decide whether to invest, the investment is already spent, and the mechanism now predicts the answer (another slow console, another ~3×). Finishing it would be measurement for its own sake. The number that decides whether the tool earns its place is the **hand-back rate on goals nobody picked for measurability**, and only real use produces that.
+
+**How to use it**
+
+- **A fast path that sometimes declines, not a replacement for driving.** On an ambiguous page it hands back (about half the time at p≈0.55 on a 2,026-control article with lookalike links), where a Claude agent would reason through and finish. A hand-back leaves the tab where it stopped with working UIDs, so falling back to `click_by_uid` costs almost nothing.
+- **Pass `expect` whenever you can name what arrival looks like.** Without it the finish is Jev's judgment alone.
+- **The allowlist grows on demand, one host at a time, on first need** — the same policy as the container routing table, and for the same reason: a speculative entry is unexercised surface. Every allowlisted host's control labels leave the machine; that is the only real cost of using this, so it is the thing to be deliberate about. Financial hosts stay blocked in code regardless. `en.wikipedia.org` is listed as the fast-site A/B fixture (public link labels only), not as a workload.
+
+**The tripwire — either one shelves it**
+
+1. **Any wrong click: shelve immediately.** Not a ratio. A click on something that was not a step toward the goal, or on anything that changed state, is exactly what the eligibility filter, the action-word list and the mutation guard exist to prevent; one instance means they failed, and the tool runs in a browser holding client sessions.
+2. **More hand-backs than finishes across the first ten real uses: shelve as not worth reaching for.** Real uses, not probe runs. Tally them here:
+
+| # | Date | Host | Goal | Outcome | Note |
+|---|---|---|---|---|---|
+| | | | | | |
+
+If it is shelved, `interactive_elements`, `wait_for stable`, the title-change settle and `scripts/probe-transition.mjs` stand on their own; record why here and leave the code.
+
+**To re-measure** (a new host class, or a loop change that might move the ratio), use the A/B protocol from the baseline section: a subagent given the same goal in the same words on the same pre-settled tab, `navigate_goal` forbidden, timing its own browser work with `python3 -c 'import time;print(int(time.time()*1000))'` (BSD `date` has no `%3N`).
