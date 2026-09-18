@@ -106,7 +106,9 @@ try {
   if (!quiet) {
     const snapshot = await mcp.tool("take_snapshot", { tabId });
     const listing = await mcp.tool("interactive_elements", { tabId });
-    console.log(`\n--- size: take_snapshot ${snapshot.text.length} chars vs interactive_elements ${listing.text.length} chars ---`);
+    console.log(
+      `\n--- take_snapshot ${snapshot.ms}ms / ${snapshot.text.length} chars vs interactive_elements ${listing.ms}ms / ${listing.text.length} chars ---`,
+    );
     console.log(listing.text.split("\n").slice(0, 25).join("\n"));
     if (listing.text.split("\n").length > 25) console.log("...");
   }
