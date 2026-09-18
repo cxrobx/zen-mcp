@@ -74,7 +74,7 @@ Measured with `scripts/probe-transition.mjs` on Search Console: the URL flips on
 | Mutation check on `Delete endpoint` | 0.92 |
 | `interactive_elements` vs `take_snapshot`, Search Console overview | 2,909 vs 18,764 characters |
 | Live: "open the Pages indexing report" (3 runs) | 1 handback before the `arrived_via` fix; then DONE twice, 1 click, 3.2–3.6 s, done=0.81 |
-| Live: "open the Sitemaps report" | DONE, 1 click, 2.6 s, pick p=1.00, done=0.95 |
+| Live: "open the Sitemaps report" | DONE, 1 click, 2.6 s, pick p=1.00, done=0.95 (superseded by the A/B above) |
 | Tokens per 1-click run | ~4.8k over 3 requests |
 | **2026-09-18 baseline, 6 runs** (before the rework) | Pages: 1 of 3 done, `done` 0.78–0.80, 2.7–3.3 s. Sitemaps: 3 of 3, 2.5–3.3 s. Every step-2 judgment was made on the stale Overview view |
 | **2026-09-18 after the rework, 7 runs** | **7 of 7 done**, `done` 0.95–0.98, real page in evidence. Pages 4.1–4.9 s (one 6.6 s, one 16 s before the hold cap), Sitemaps 4.7–6.1 s. Of that, 1.5–4.0 s is Google swapping the route after the click, ~0.5 s the first settle, ~0.6–0.9 s Jev over 3 requests, ~0.5 s snapshots and RPCs |
@@ -84,7 +84,22 @@ Measured with `scripts/probe-transition.mjs` on Search Console: the URL flips on
 | Wikipedia, ambiguous goal ("the incompleteness theorems article") | Both loops hand back about half the time at p≈0.55: 2,026 controls, capped at 254 in DOM order, several lookalike links. A candidate-set limit, not a loop one |
 | jev-ultrafast, Google Flights, for scale | 11 actions in 7.07 s; Jev median 178 ms over 17 requests (3.7 s of the 7); ~640 ms per action all-in |
 
-For comparison, nav-memory telemetry puts the median gap between Claude-driven steps at 4.8 s.
+### The Claude-driven baseline, measured (2026-09-18)
+
+The keep/kill test compares against "the Claude-driven path", which until now was a proxy: nav-memory's 4.8 s median gap between steps. It is now measured directly. A general-purpose subagent was handed the **same goal in the same words**, on the **same pre-settled tab**, with the zen tools and `navigate_goal` forbidden, and bracketed its own browser work with millisecond timestamps. Three runs per site, same build on both sides.
+
+| Goal | navigate_goal (median of 3) | Claude-driven (median of 3) | Ratio |
+|---|---|---|---|
+| Search Console, "open the Sitemaps report" | **4.8 s** (4.6 / 4.8 / 5.1) | **15.0 s** (9.4 / 15.0 / 15.4) | **3.1×** |
+| Wikipedia, "open the Talk page for this article" | **3.8 s** (3.4 / 3.8 / 4.0) | **21.6 s** (20.8 / 21.6 / 28.0) | **5.7×** |
+
+**The baseline is best-case, and deliberately so.** Every one of the six runs took the optimal route with **zero wrong turns in the browser** — typically `find_by_text` → `click_by_uid` → one confirming read, three calls. One run used `css:#ca-talk a` from prior knowledge of Wikipedia's DOM, a shortcut navigate_goal cannot take, and still took 20.8 s. The subagents were also handed an already-settled page, while navigate_goal's number includes its own ~0.55 s first settle. Both asymmetries favor the baseline, so the real ratios are wider.
+
+**Where the Claude time goes: round trips, not the browser.** No agent reported a slow browser call. The cost is ~4-5 s per model turn, and a correct run needs three or four. Two of the three Wikipedia runs additionally burned 2 turns each guessing tool argument names (`wait_for` needs `condition` + `urlPattern`, `evaluate_script` needs `code`); the third spent one `ToolSearch` instead and had none. That is a real recurring cost of driving a tool surface by model, and it is exactly the cost a code loop does not pay.
+
+**Independent confirmation of the click-feedback race.** Two of the three Wikipedia agents flagged, unprompted, that `click_by_uid` echoed the OLD url and title because the navigation had not committed, and both said an agent trusting that line would have clicked again. That is the same race that made `navigated` unreliable in the settle (see *Known limits*), found from the other side.
+
+**So the shared-render worry was real but not fatal.** Google's route swap (1.5-4 s) is paid by both paths and does drag the ratio down: on Search Console the non-render work is 6.7× faster, the whole task 3.1×. On a fast site, where render is under a second, the full 5.7× shows through. The 3× bar survives on both, and it is tightest exactly where the site is slowest.
 
 ## Known limits
 
@@ -177,4 +192,6 @@ Two notes that read against the general Jev literature. For the vendor-level tre
 
 ## Keep or kill
 
-Keep `navigate_goal` if it is at least **3× faster** than the Claude-driven path on three recurring **non-financial** reads, with **zero wrong clicks** — measuring both paths from the same starting page to the same *rendered* destination, since the site's own swap time (1.5–4 s here) is paid by either driver. Search Console is measured. Stripe is out permanently (financial). Bing Webmaster Tools is the natural second task, since it's the same kind of SEO console; the third should be chosen deliberately, because every allowlisted host's control labels leave the machine. If it fails the test, `interactive_elements` and `stable` stand on their own; shelve `navigate_goal` and record why here.
+Keep `navigate_goal` if it is at least **3× faster** than the Claude-driven path on three recurring **non-financial** reads, with **zero wrong clicks** — measuring both paths from the same starting page to the same *rendered* destination, since the site's own swap time (1.5–4 s here) is paid by either driver.
+
+**Progress, 2026-09-18: one of three reads passes.** Search Console clears the bar at **3.1×** with zero wrong clicks across every run (see *The Claude-driven baseline, measured*). Wikipedia clears it at 5.7× but is a test fixture, not one of Chris's recurring reads, so it does not count toward the three; it is kept as the fast-site control that shows what the ratio looks like when the site is not the bottleneck. **Two genuine recurring reads still needed.** Stripe is out permanently (financial). Bing Webmaster Tools is the natural second task, since it's the same kind of SEO console; the third should be chosen deliberately, because every allowlisted host's control labels leave the machine. Use the same A/B protocol: a subagent given the same goal in the same words on the same pre-settled tab, `navigate_goal` forbidden, timing its own browser work. If it fails the test, `interactive_elements` and `stable` stand on their own; shelve `navigate_goal` and record why here.

@@ -475,7 +475,11 @@ body:not(:has(.lvl-radio:checked)) .eli14 { display: block; }
 division of labor</a></li>
 <li><a href="#rules-learned-in-this-build">Rules learned in this
 build</a></li>
-<li><a href="#measurements">Measurements</a></li>
+<li><a href="#measurements">Measurements</a>
+<ul>
+<li><a href="#the-claude-driven-baseline-measured-2026-09-18">The
+Claude-driven baseline, measured (2026-09-18)</a></li>
+</ul></li>
 <li><a href="#known-limits">Known limits</a></li>
 <li><a href="#where-else--the-survey-and-the-verdict">Where else — the survey
 and the verdict</a>
@@ -704,7 +708,8 @@ Search Console overview</td>
 </tr>
 <tr>
 <td>Live: "open the Sitemaps report"</td>
-<td>DONE, 1 click, 2.6 s, pick p=1.00, done=0.95</td>
+<td>DONE, 1 click, 2.6 s, pick p=1.00, done=0.95 (superseded by the A/B
+above)</td>
 </tr>
 <tr>
 <td>Tokens per 1-click run</td>
@@ -758,8 +763,71 @@ the 7); ~640 ms per action all-in</td>
 </tr>
 </tbody>
 </table>
-<p>For comparison, nav-memory telemetry puts the median gap between
-Claude-driven steps at 4.8 s.</p>
+<h3 id="the-claude-driven-baseline-measured-2026-09-18">The
+Claude-driven baseline, measured (2026-09-18)</h3>
+<p>The keep/kill test compares against "the Claude-driven path", which
+until now was a proxy: nav-memory's 4.8 s median gap between steps. It
+is now measured directly. A general-purpose subagent was handed the
+<strong>same goal in the same words</strong>, on the <strong>same
+pre-settled tab</strong>, with the zen tools and
+<code>navigate_goal</code> forbidden, and bracketed its own browser work
+with millisecond timestamps. Three runs per site, same build on both
+sides.</p>
+<table>
+<thead>
+<tr>
+<th>Goal</th>
+<th>navigate_goal (median of 3)</th>
+<th>Claude-driven (median of 3)</th>
+<th>Ratio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Search Console, "open the Sitemaps report"</td>
+<td><strong>4.8 s</strong> (4.6 / 4.8 / 5.1)</td>
+<td><strong>15.0 s</strong> (9.4 / 15.0 / 15.4)</td>
+<td><strong>3.1×</strong></td>
+</tr>
+<tr>
+<td>Wikipedia, "open the Talk page for this article"</td>
+<td><strong>3.8 s</strong> (3.4 / 3.8 / 4.0)</td>
+<td><strong>21.6 s</strong> (20.8 / 21.6 / 28.0)</td>
+<td><strong>5.7×</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The baseline is best-case, and deliberately so.</strong>
+Every one of the six runs took the optimal route with <strong>zero wrong
+turns in the browser</strong> — typically <code>find_by_text</code> →
+<code>click_by_uid</code> → one confirming read, three calls. One run
+used <code>css:#ca-talk a</code> from prior knowledge of Wikipedia's
+DOM, a shortcut navigate_goal cannot take, and still took 20.8 s. The
+subagents were also handed an already-settled page, while
+navigate_goal's number includes its own ~0.55 s first settle. Both
+asymmetries favor the baseline, so the real ratios are wider.</p>
+<p><strong>Where the Claude time goes: round trips, not the
+browser.</strong> No agent reported a slow browser call. The cost is
+~4-5 s per model turn, and a correct run needs three or four. Two of the
+three Wikipedia runs additionally burned 2 turns each guessing tool
+argument names (<code>wait_for</code> needs <code>condition</code> +
+<code>urlPattern</code>, <code>evaluate_script</code> needs
+<code>code</code>); the third spent one <code>ToolSearch</code> instead
+and had none. That is a real recurring cost of driving a tool surface by
+model, and it is exactly the cost a code loop does not pay.</p>
+<p><strong>Independent confirmation of the click-feedback race.</strong>
+Two of the three Wikipedia agents flagged, unprompted, that
+<code>click_by_uid</code> echoed the OLD url and title because the
+navigation had not committed, and both said an agent trusting that line
+would have clicked again. That is the same race that made
+<code>navigated</code> unreliable in the settle (see <em>Known
+limits</em>), found from the other side.</p>
+<p><strong>So the shared-render worry was real but not fatal.</strong>
+Google's route swap (1.5-4 s) is paid by both paths and does drag the
+ratio down: on Search Console the non-render work is 6.7× faster, the
+whole task 3.1×. On a fast site, where render is under a second, the
+full 5.7× shows through. The 3× bar survives on both, and it is tightest
+exactly where the site is slowest.</p>
 <h2 id="known-limits">Known limits</h2>
 <ul>
 <li><strong>A one-click run is ~4–5 s on Search Console, and most of it
@@ -1039,13 +1107,23 @@ faster</strong> than the Claude-driven path on three recurring
 <strong>non-financial</strong> reads, with <strong>zero wrong
 clicks</strong> — measuring both paths from the same starting page to
 the same <em>rendered</em> destination, since the site's own swap time
-(1.5–4 s here) is paid by either driver. Search Console is measured.
-Stripe is out permanently (financial). Bing Webmaster Tools is the
-natural second task, since it's the same kind of SEO console; the third
-should be chosen deliberately, because every allowlisted host's control
-labels leave the machine. If it fails the test,
-<code>interactive_elements</code> and <code>stable</code> stand on their
-own; shelve <code>navigate_goal</code> and record why here.</p>
+(1.5–4 s here) is paid by either driver.</p>
+<p><strong>Progress, 2026-09-18: one of three reads passes.</strong>
+Search Console clears the bar at <strong>3.1×</strong> with zero wrong
+clicks across every run (see <em>The Claude-driven baseline,
+measured</em>). Wikipedia clears it at 5.7× but is a test fixture, not
+one of Chris's recurring reads, so it does not count toward the three;
+it is kept as the fast-site control that shows what the ratio looks like
+when the site is not the bottleneck. <strong>Two genuine recurring reads
+still needed.</strong> Stripe is out permanently (financial). Bing
+Webmaster Tools is the natural second task, since it's the same kind of
+SEO console; the third should be chosen deliberately, because every
+allowlisted host's control labels leave the machine. Use the same A/B
+protocol: a subagent given the same goal in the same words on the same
+pre-settled tab, <code>navigate_goal</code> forbidden, timing its own
+browser work. If it fails the test, <code>interactive_elements</code>
+and <code>stable</code> stand on their own; shelve
+<code>navigate_goal</code> and record why here.</p>
 
     </main>
 
