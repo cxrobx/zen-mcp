@@ -114,6 +114,14 @@ The original keep/kill test compared against "the Claude-driven path", which unt
 
 ## Where else — the survey and the verdict
 
+> **Superseded twice, 2026-09-18 — read this before using the table below.** The verdict was already stale when written (PocketBuddy's **values alignment** shipped on Jev 2026-09-16, `services/alignment_outbound.py`), and Chris authorized a third integration on 2026-09-18: **PocketBuddy intent routing**. Tripwire 1 *was* met and the survey missed it — the survey asked whether a decision path had a sub-2-second budget, checked the QES 60s SLA, and never measured the chat router the user watches a spinner for. Measured: **2.2–2.6s on Luna vs ~170ms on Jev**, 98% agreement on the 86 labelled examples the router prompt already carried.
+>
+> **The correction that generalizes: a latency budget is what a human will sit through, not what an SLA says.** Filter 4 ("needs a sub-2-second budget") is right; applying it only to contractual deadlines is what made it miss. Ask where someone is *waiting*.
+>
+> Filter 3 also needs narrowing: the router was a **metered OpenAI call**, not subscription work, so "the marginal cost of a decision here is zero" was never true of it. Cost still didn't decide it — latency did — but the premise was wrong.
+>
+> The privacy rule below (§ rule 5, no financial data to TypeSafe) was **deliberately widened** for routing, not bypassed: a sanitized message with no user id may leave for an opted-in user. The reasoning is in finance-app's `agents/routing_outbound.py`.
+
 **Verdict, 2026-09-17: no second integration.** Jev is priced for a problem this shop doesn't have. Its whole pitch is cost *per decision*, and the marginal cost of a decision here is already **zero** — the decision layer runs on the Claude subscription (jobscan's haiku workers, aimedia's planner, every headless `claude -p`). "40–400× cheaper" is a comparison against a metered bill that doesn't exist; adding Jev doesn't remove a line item, it adds one. It also adds permanent harness surface — the fail-closed allowlist, `redactText`, the financial-domain block and the tests for all three — which exists because the first live run leaked an account email.
 
 Not "Jev is bad." **Jev is built for someone paying per decision at volume.** This shop pays per month, at low volume, against latency budgets measured in seconds.
@@ -131,7 +139,8 @@ Not "Jev is bad." **Jev is built for someone paying per decision at volume.** Th
 |---|---|---|
 | **QES / LSA responder** | urgency × $value · service category · technician class · is the six-field intake complete | The shape is exact — this *is* the differentiator sold against Housecall Pro. But the budget is **60 s**, which haiku clears by 20×, and one contractor is not volume. **Correction to an earlier read here: "sub-60s is contractual, therefore binding" was wrong** — a constraint met 20× over is not a constraint |
 | **jobscan** | score a posting against the rubric | **The only live signal.** haiku workers tripped the Claude *session limit* — the one place the subscription stops being free, because the constraint turns into rate, not dollars. Still weak: 3 workers, a weekly sweep |
-| **PocketBuddy values alignment** | merchant ↔ a stated value | Genuine fan-out shape, already schema-gated — but single-user volume. Not the bottleneck |
+| **PocketBuddy values alignment** | merchant ↔ a stated value | ~~Not the bottleneck~~ — **already built and shipped 2026-09-16**, before this row was written. `services/alignment_outbound.py` is the five-field outbound record the routing work later copied |
+| **PocketBuddy intent routing** | which agent · which tool domain · how long an answer · does this need dates | **Built 2026-09-18.** The case the survey missed: 2.2–2.6s of user-visible wait, a metered call, a bounded judgment over ~10 agents and 6 domains. 98% / ~170ms |
 | **`navigate_goal`** | built, in use | Runs under the tripwire at the bottom; the allowlist grows on demand, never to feed it |
 
 The move on all of them is the same, and it doesn't need Jev: **decompose into named typed questions on haiku first.** The decision-native-models guide's own strongest finding is that *decomposition, not the model,* produced most of the measured gain — every comparison model got more accurate, faster and cheaper inside an explicit decomposed workflow. Do that and the Jev swap stays a one-line, reversible margin lever for later.
