@@ -2,6 +2,26 @@
 
 WebExtension-backed MCP for Zen (Firefox). User docs in `README.md`; this file is for an agent working on the codebase.
 
+> ## ⚠️ This repo is PUBLIC — `github.com/cxrobx/zen-mcp`
+>
+> Unusual for this machine, and easy to forget because everything it automates is personal:
+> Chris's real containers, his logged-in sessions, his client work. **Nothing real goes in a
+> tracked file.** Use placeholders in examples, fixtures and tests — `you@example.com`,
+> `example.com`, `acct_1ABC99` — and keep every actual value in `~/.config/zen-mcp/*.json`,
+> which is not in the repo and never should be.
+>
+> **Before any push, grep what you are about to publish:**
+> ```sh
+> git grep -nIE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}" -- . | grep -v noreply@anthropic
+> git grep -nIiE "\b(XRF|QES|AEG|ISC|Madcraft)\b" -- .
+> ```
+> This is not hypothetical. On 2026-09-19 a routing feature had put **two of Chris's real
+> email addresses** into `README.md` and `scripts/container-routes.test.mjs`, and they were
+> one `git push` from being published and scraped — caught only because the push was
+> checked first. A follow-up commit does not undo that; removing a pushed secret needs a
+> history rewrite. The repo had also gone a month without a push, so "just my last few
+> commits" was really 31.
+
 ## This is the only Zen MCP — there is no escape hatch
 
 All seven `zen-*` entries in `claude mcp list` point at **this** repo, and nothing else drives Zen. Renamed from `zen-extension-mcp` on 2026-07-29, taking the name from a Marionette/Selenium fork of [`firefox-devtools-mcp`](https://github.com/mozilla/firefox-devtools-mcp) that was **archived and deleted** the same day (bundle: `~/Archives/zen-mcp-marionette-30d675c.bundle`). That fork had never been registered in any MCP scope, so it was unreachable from every session.
