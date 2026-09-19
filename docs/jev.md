@@ -2,7 +2,7 @@
 
 Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`); loop reworked 2026-09-18 after comparing it with browser-use's `jev-ultrafast` (§ *The loop, reworked*). In use since 2026-09-18 under a written tripwire at the bottom (§ *In use, with a tripwire*).
 
-**Before proposing a second integration, read § *Where else — the survey and the verdict*. The answer as of 2026-09-17 is no, and the three tripwires that would change it are listed there. Don't re-derive it.**
+**Before proposing a second integration, read § *Where else — the survey and the verdict* and § *Jev vs a trained classifier*. The answer as of 2026-09-17 is no, and the three tripwires that would change it are listed there. Don't re-derive it.**
 
 This is also the reference for adding TypeSafe's Jev to other projects. The zen-mcp specifics are examples of rules that travel.
 
@@ -126,12 +126,13 @@ The original keep/kill test compared against "the Claude-driven path", which unt
 
 Not "Jev is bad." **Jev is built for someone paying per decision at volume.** This shop pays per month, at low volume, against latency budgets measured in seconds.
 
-### Four filters that kill a candidate before the shape test
+### Five filters that kill a candidate before the shape test
 
 1. **Text or JSON only** (~32k tokens, no images). Anything judged from a frame or a screenshot is out — aimedia's story checks read a scene's last frame; the iOS validator compares screenshots.
 2. **Quality is lateral at best.** 67.8% agreement in TypeSafe's own four-workflow eval — level with Sonnet 5, behind Opus 5 (73.1) and Sol (74.1). Only ever a swap where **haiku is already good enough**; never where Opus was the right call.
 3. **Cost only binds where the subscription doesn't reach.** See the verdict.
 4. **Latency needs a sub-2-second budget to matter.** 130–400 ms against ~3–5 s wins nothing under a 60-second SLA.
+5. **A trained classifier would be cheaper, faster and private.** Ask this *first* on anything classification-shaped: the competitor isn't another model, it's **no model**. It loses only when the labels are scarce, written as rules rather than found in the data, or churning — see § *Jev vs a trained classifier*.
 
 ### The survey
 
@@ -159,6 +160,49 @@ The move on all of them is the same, and it doesn't need Jev: **decompose into n
 3. **Per-decision cost is billed through to a client at volume** — the LSA line across *many* contractors, not one.
 
 None are true today. Until one is, the answer is no.
+
+## Jev vs a trained classifier
+
+The five filters above ask whether Jev beats **another model**. Until 2026-09-19 none of them asked whether it beats **no model** — a logistic regression or a distilled encoder running in-process for nothing. On anything classification-shaped that is the cheaper competitor, and it is the one to rule out first.
+
+Prompted by [@scheemunai](https://x.com/scheemunai/status/2101067322219696632) (X, 2026-09-18), who runs 500,000 YouTube transcripts a day through a topic classifier for an internal ad network — *"a small ML algo on a server, it classifies it in milliseconds for $0. Why would I use Jev for this?!"* For his task, you wouldn't. He is not wrong about Jev; he is describing a different problem.
+
+### Five questions that decide it
+
+| Ask | A trained classifier wins when | Jev wins when |
+|---|---|---|
+| **Labelled data** | thousands of examples arrive for free | dozens, hand-written, with no traffic to harvest |
+| **Where the labels come from** | the data — clusters that exist in the world | a written rule that splits near-identical sentences |
+| **Label-set churn** | stable for months | a new class ships with every feature |
+| **Volume** | per-call cost *is* the bill | per-call cost is a rounding error and latency is the bill |
+| **What goes outbound** | nothing — it runs in-process | the text leaves, and you can live with that |
+
+Every row favouring the classifier favours it over an LLM too. That is the point: *"Jev or haiku"* is the second question, *"anything or nothing"* is the first.
+
+### Worked example — PocketBuddy intent routing
+
+Re-checked 2026-09-19 against the shipped implementation. Would a custom classifier have been the better fix? No, and each row says why.
+
+- **Labelled data: 86 examples, and that is all of it.** `data_query` 29 · `context` 23 · `advisory` 12 · `transfer_rules` 6 · `budget` 6 · `dashboard_layout` 6 · `clarify` 4. Six examples for a class, two real users, and nothing to harvest. @scheemunai trains on half a million documents a day arriving for free.
+- **The labels are prose rules, not clusters.** `"what's my net worth"` routes advisory but `"net worth over time"` routes data_query; `"I'll pay the card first"` is a decision to remember but `"should I pay the card first"` is advice. Those pairs are nearest neighbours in any embedding space and differ by a modal verb or a tense. Embedding + LR separates ad topics trivially and separates *those* essentially never on six examples. That — not anything magic about Jev — is why a read-the-criteria model wins here.
+- **The label set churns.** `data_query`, `dashboard_layout`, `context` and the account tools inside `context` all shipped within months. A new class means relabel, retrain and a versioned artifact in the deploy; on Jev it is editing a paragraph in `ROUTES` and re-running the eval.
+- **Volume is two real users.** The $0-per-call argument wins at 500k/day and buys nothing at 500/week.
+- **Outbound is the row the classifier wins, and it wins it decisively.** `agents/routing_outbound.py` — 207 lines of masking, `is_person_shaped` withholding, the opt-in flag, the demo carve-out and a written residual risk about names in free text — exists *only* because the classifier is remote. A local model deletes the whole module. Weigh that honestly before the next integration; it is the strongest standing argument against one.
+
+### What the swap is actually worth, measured
+
+The same eval scores both routers on the same 86 labels: **reasoning-off Luna 85/86 at p50 1135 ms; Jev 84/86 plus 2 safe hand-backs at ~170 ms.** Accuracy is a wash. The entire case is ~1 s of time-to-first-token — and the largest single win on that path (2.2–2.6 s → ~1.1 s, from `reasoning_effort='none'`) was free, in-house and already shipped.
+
+Two things to carry:
+
+1. **Measure the incumbent after tuning it, not before.** "2.4 s vs 170 ms" reads as a 14× win; against the tuned incumbent it is 6.6× on one part of the wait.
+2. **Take the free structural win before the vendor one.** `api/agents.py` still runs context → history → classify sequentially in both handlers, because Luna consumes `financial_context`. `RoutingRecord` has exactly two fields — Jev never reads the context — so under Jev the classify call can be gathered with the context build, hiding most of the remaining cost behind work already being done. Larger than the model swap, and free.
+
+### The rule that travels
+
+**Jev is for a judgment you can only state as a rule, over data you have no labels for, where someone is waiting.** Where the labels exist or the world supplies them, a small trained classifier is faster, free and private. Where the judgment has to be *written* — a clarifying question, a summary — neither is the tool.
+
+Corollary for a bootstrap: the honest custom-classifier play is rarely "train one from scratch", it is **distil the decisions you are already logging** once there are thousands of them — which deletes the outbound path with it. Tripwire for routing: ~2,000 logged prod routes with every class above ~100 → re-run `scripts/eval_jev_routing.py` with a local distilled model as a third arm. Match at ~20 ms with nothing leaving the machine and the swap pays for itself twice.
 
 ## The loop, reworked (2026-09-18)
 

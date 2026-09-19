@@ -440,7 +440,7 @@ body:not(:has(.lvl-radio:checked)) .eli14 { display: block; }
 <div class="wrap">
 
   <header class="doc-header">
-    <p class="eyebrow">September 18, 2026</p>
+    <p class="eyebrow">September 19, 2026</p>
     <h1>Jev in zen-mcp</h1>
     <p class="subtitle">Implementation + porting reference</p>
   </header>
@@ -484,12 +484,23 @@ Claude-driven baseline, measured (2026-09-18)</a></li>
 <li><a href="#where-else--the-survey-and-the-verdict">Where else — the survey
 and the verdict</a>
 <ul>
-<li><a href="#four-filters-that-kill-a-candidate-before-the-shape-test">Four
+<li><a href="#five-filters-that-kill-a-candidate-before-the-shape-test">Five
 filters that kill a candidate before the shape test</a></li>
 <li><a href="#the-survey">The survey</a></li>
 <li><a href="#looks-like-a-fit-isnt">Looks like a fit, isn't</a></li>
 <li><a href="#tripwires--revisit-only-when-one-of-these-is-true">Tripwires —
 revisit only when one of these is true</a></li>
+</ul></li>
+<li><a href="#jev-vs-a-trained-classifier">Jev vs a trained classifier</a>
+<ul>
+<li><a href="#five-questions-that-decide-it">Five questions that decide
+it</a></li>
+<li><a href="#worked-example--pocketbuddy-intent-routing">Worked example —
+PocketBuddy intent routing</a></li>
+<li><a href="#what-the-swap-is-actually-worth-measured">What the swap is
+actually worth, measured</a></li>
+<li><a href="#the-rule-that-travels">The
+rule that travels</a></li>
 </ul></li>
 <li><a href="#the-loop-reworked-2026-09-18">The loop, reworked
 (2026-09-18)</a></li>
@@ -510,9 +521,10 @@ loop reworked 2026-09-18 after comparing it with browser-use's
 2026-09-18 under a written tripwire at the bottom (§ <em>In use, with a
 tripwire</em>).</p>
 <p><strong>Before proposing a second integration, read § <em>Where else
-— the survey and the verdict</em>. The answer as of 2026-09-17 is no,
-and the three tripwires that would change it are listed there. Don't
-re-derive it.</strong></p>
+— the survey and the verdict</em> and § <em>Jev vs a trained
+classifier</em>. The answer as of 2026-09-17 is no, and the three
+tripwires that would change it are listed there. Don't re-derive
+it.</strong></p>
 <p>This is also the reference for adding TypeSafe's Jev to other
 projects. The zen-mcp specifics are examples of rules that travel.</p>
 <h2 id="what-jev-is">What Jev is</h2>
@@ -862,6 +874,33 @@ toggling or form flows, and that is not a gap to close here.</li>
 </ul>
 <h2 id="where-else--the-survey-and-the-verdict">Where else — the survey
 and the verdict</h2>
+<blockquote>
+<p><strong>Superseded twice, 2026-09-18 — read this before using the
+table below.</strong> The verdict was already stale when written
+(PocketBuddy's <strong>values alignment</strong> shipped on Jev
+2026-09-16, <code>services/alignment_outbound.py</code>), and Chris
+authorized a third integration on 2026-09-18: <strong>PocketBuddy intent
+routing</strong>. Tripwire 1 <em>was</em> met and the survey missed it —
+the survey asked whether a decision path had a sub-2-second budget,
+checked the QES 60s SLA, and never measured the chat router the user
+watches a spinner for. Measured: <strong>2.2–2.6s on Luna vs ~170ms on
+Jev</strong>, 98% agreement on the 86 labelled examples the router
+prompt already carried.</p>
+<p><strong>The correction that generalizes: a latency budget is what a
+human will sit through, not what an SLA says.</strong> Filter 4 ("needs
+a sub-2-second budget") is right; applying it only to contractual
+deadlines is what made it miss. Ask where someone is
+<em>waiting</em>.</p>
+<p>Filter 3 also needs narrowing: the router was a <strong>metered
+OpenAI call</strong>, not subscription work, so "the marginal cost of a
+decision here is zero" was never true of it. Cost still didn't decide it
+— latency did — but the premise was wrong.</p>
+<p>The privacy rule below (§ rule 5, no financial data to TypeSafe) was
+<strong>deliberately widened</strong> for routing, not bypassed: a
+sanitized message with no user id may leave for an opted-in user. The
+reasoning is in finance-app's
+<code>agents/routing_outbound.py</code>.</p>
+</blockquote>
 <p><strong>Verdict, 2026-09-17: no second integration.</strong> Jev is
 priced for a problem this shop doesn't have. Its whole pitch is cost
 <em>per decision</em>, and the marginal cost of a decision here is
@@ -876,7 +915,7 @@ account email.</p>
 <p>Not "Jev is bad." <strong>Jev is built for someone paying per
 decision at volume.</strong> This shop pays per month, at low volume,
 against latency budgets measured in seconds.</p>
-<h3 id="four-filters-that-kill-a-candidate-before-the-shape-test">Four
+<h3 id="five-filters-that-kill-a-candidate-before-the-shape-test">Five
 filters that kill a candidate before the shape test</h3>
 <ol type="1">
 <li><strong>Text or JSON only</strong> (~32k tokens, no images).
@@ -891,6 +930,12 @@ good enough</strong>; never where Opus was the right call.</li>
 reach.</strong> See the verdict.</li>
 <li><strong>Latency needs a sub-2-second budget to matter.</strong>
 130–400 ms against ~3–5 s wins nothing under a 60-second SLA.</li>
+<li><strong>A trained classifier would be cheaper, faster and
+private.</strong> Ask this <em>first</em> on anything
+classification-shaped: the competitor isn't another model, it's
+<strong>no model</strong>. It loses only when the labels are scarce,
+written as rules rather than found in the data, or churning — see §
+<em>Jev vs a trained classifier</em>.</li>
 </ol>
 <h3 id="the-survey">The survey</h3>
 <table>
@@ -924,8 +969,18 @@ weak: 3 workers, a weekly sweep</td>
 <tr>
 <td><strong>PocketBuddy values alignment</strong></td>
 <td>merchant ↔︎ a stated value</td>
-<td>Genuine fan-out shape, already schema-gated — but single-user
-volume. Not the bottleneck</td>
+<td><del>Not the bottleneck</del> — <strong>already built and shipped
+2026-09-16</strong>, before this row was written.
+<code>services/alignment_outbound.py</code> is the five-field outbound
+record the routing work later copied</td>
+</tr>
+<tr>
+<td><strong>PocketBuddy intent routing</strong></td>
+<td>which agent · which tool domain · how long an answer · does this
+need dates</td>
+<td><strong>Built 2026-09-18.</strong> The case the survey missed:
+2.2–2.6s of user-visible wait, a metered call, a bounded judgment over
+~10 agents and 6 domains. 98% / ~170ms</td>
 </tr>
 <tr>
 <td><strong><code>navigate_goal</code></strong></td>
@@ -971,6 +1026,134 @@ volume</strong> — the LSA line across <em>many</em> contractors, not
 one.</li>
 </ol>
 <p>None are true today. Until one is, the answer is no.</p>
+<h2 id="jev-vs-a-trained-classifier">Jev vs a trained classifier</h2>
+<p>The five filters above ask whether Jev beats <strong>another
+model</strong>. Until 2026-09-19 none of them asked whether it beats
+<strong>no model</strong> — a logistic regression or a distilled encoder
+running in-process for nothing. On anything classification-shaped that
+is the cheaper competitor, and it is the one to rule out first.</p>
+<p>Prompted by <a
+href="https://x.com/scheemunai/status/2101067322219696632">@scheemunai</a>
+(X, 2026-09-18), who runs 500,000 YouTube transcripts a day through a
+topic classifier for an internal ad network — <em>"a small ML algo on a
+server, it classifies it in milliseconds for $0. Why would I use Jev for
+this?!"</em> For his task, you wouldn't. He is not wrong about Jev; he
+is describing a different problem.</p>
+<h3 id="five-questions-that-decide-it">Five questions that decide
+it</h3>
+<table>
+<thead>
+<tr>
+<th>Ask</th>
+<th>A trained classifier wins when</th>
+<th>Jev wins when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Labelled data</strong></td>
+<td>thousands of examples arrive for free</td>
+<td>dozens, hand-written, with no traffic to harvest</td>
+</tr>
+<tr>
+<td><strong>Where the labels come from</strong></td>
+<td>the data — clusters that exist in the world</td>
+<td>a written rule that splits near-identical sentences</td>
+</tr>
+<tr>
+<td><strong>Label-set churn</strong></td>
+<td>stable for months</td>
+<td>a new class ships with every feature</td>
+</tr>
+<tr>
+<td><strong>Volume</strong></td>
+<td>per-call cost <em>is</em> the bill</td>
+<td>per-call cost is a rounding error and latency is the bill</td>
+</tr>
+<tr>
+<td><strong>What goes outbound</strong></td>
+<td>nothing — it runs in-process</td>
+<td>the text leaves, and you can live with that</td>
+</tr>
+</tbody>
+</table>
+<p>Every row favouring the classifier favours it over an LLM too. That
+is the point: <em>"Jev or haiku"</em> is the second question,
+<em>"anything or nothing"</em> is the first.</p>
+<h3 id="worked-example--pocketbuddy-intent-routing">Worked example —
+PocketBuddy intent routing</h3>
+<p>Re-checked 2026-09-19 against the shipped implementation. Would a
+custom classifier have been the better fix? No, and each row says
+why.</p>
+<ul>
+<li><strong>Labelled data: 86 examples, and that is all of it.</strong>
+<code>data_query</code> 29 · <code>context</code> 23 ·
+<code>advisory</code> 12 · <code>transfer_rules</code> 6 ·
+<code>budget</code> 6 · <code>dashboard_layout</code> 6 ·
+<code>clarify</code> 4. Six examples for a class, two real users, and
+nothing to harvest. @scheemunai trains on half a million documents a day
+arriving for free.</li>
+<li><strong>The labels are prose rules, not clusters.</strong>
+<code>"what's my net worth"</code> routes advisory but
+<code>"net worth over time"</code> routes data_query;
+<code>"I'll pay the card first"</code> is a decision to remember but
+<code>"should I pay the card first"</code> is advice. Those pairs are
+nearest neighbours in any embedding space and differ by a modal verb or
+a tense. Embedding + LR separates ad topics trivially and separates
+<em>those</em> essentially never on six examples. That — not anything
+magic about Jev — is why a read-the-criteria model wins here.</li>
+<li><strong>The label set churns.</strong> <code>data_query</code>,
+<code>dashboard_layout</code>, <code>context</code> and the account
+tools inside <code>context</code> all shipped within months. A new class
+means relabel, retrain and a versioned artifact in the deploy; on Jev it
+is editing a paragraph in <code>ROUTES</code> and re-running the
+eval.</li>
+<li><strong>Volume is two real users.</strong> The $0-per-call argument
+wins at 500k/day and buys nothing at 500/week.</li>
+<li><strong>Outbound is the row the classifier wins, and it wins it
+decisively.</strong> <code>agents/routing_outbound.py</code> — 207 lines
+of masking, <code>is_person_shaped</code> withholding, the opt-in flag,
+the demo carve-out and a written residual risk about names in free text
+— exists <em>only</em> because the classifier is remote. A local model
+deletes the whole module. Weigh that honestly before the next
+integration; it is the strongest standing argument against one.</li>
+</ul>
+<h3 id="what-the-swap-is-actually-worth-measured">What the swap is
+actually worth, measured</h3>
+<p>The same eval scores both routers on the same 86 labels:
+<strong>reasoning-off Luna 85/86 at p50 1135 ms; Jev 84/86 plus 2 safe
+hand-backs at ~170 ms.</strong> Accuracy is a wash. The entire case is
+~1 s of time-to-first-token — and the largest single win on that path
+(2.2–2.6 s → ~1.1 s, from <code>reasoning_effort='none'</code>) was
+free, in-house and already shipped.</p>
+<p>Two things to carry:</p>
+<ol type="1">
+<li><strong>Measure the incumbent after tuning it, not before.</strong>
+"2.4 s vs 170 ms" reads as a 14× win; against the tuned incumbent it is
+6.6× on one part of the wait.</li>
+<li><strong>Take the free structural win before the vendor one.</strong>
+<code>api/agents.py</code> still runs context → history → classify
+sequentially in both handlers, because Luna consumes
+<code>financial_context</code>. <code>RoutingRecord</code> has exactly
+two fields — Jev never reads the context — so under Jev the classify
+call can be gathered with the context build, hiding most of the
+remaining cost behind work already being done. Larger than the model
+swap, and free.</li>
+</ol>
+<h3 id="the-rule-that-travels">The rule that travels</h3>
+<p><strong>Jev is for a judgment you can only state as a rule, over data
+you have no labels for, where someone is waiting.</strong> Where the
+labels exist or the world supplies them, a small trained classifier is
+faster, free and private. Where the judgment has to be <em>written</em>
+— a clarifying question, a summary — neither is the tool.</p>
+<p>Corollary for a bootstrap: the honest custom-classifier play is
+rarely "train one from scratch", it is <strong>distil the decisions you
+are already logging</strong> once there are thousands of them — which
+deletes the outbound path with it. Tripwire for routing: ~2,000 logged
+prod routes with every class above ~100 → re-run
+<code>scripts/eval_jev_routing.py</code> with a local distilled model as
+a third arm. Match at ~20 ms with nothing leaving the machine and the
+swap pays for itself twice.</p>
 <h2 id="the-loop-reworked-2026-09-18">The loop, reworked
 (2026-09-18)</h2>
 <p>Prompted by browser-use's <a
@@ -1188,7 +1371,7 @@ browser work with
 
   <footer class="doc-footer">
     <span>Jev in zen-mcp</span>
-    <span>September 18, 2026</span>
+    <span>September 19, 2026</span>
   </footer>
 
 </div>
