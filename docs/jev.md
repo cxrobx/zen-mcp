@@ -114,6 +114,7 @@ Upstream carries the same sentence in `NEXT_ACTION` and `TEXT_VALUE`.
 | **Fast-site A/B, Wikipedia** ("open the Talk page" from the Gödel article, old loop in a worktree vs new, 3 runs each) | Old: 2 of 3 done, 3.7–3.9 s; the failure was the same stale-view bug (clicked Talk, observed the still-loading original page, `done` 0.65, tried the same link again). New: 3 of 3, 3.3–3.4 s, `done` 0.98–0.99, first Jev request ~250 ms vs ~600 ms. Of the new clock: ~0.55 s first settle, ~0.8 s Jev, ~0.7 s post-click, ~1.3 s snapshots of a 2,026-control page |
 | Wikipedia, ambiguous goal ("the incompleteness theorems article") | Both loops hand back about half the time at p≈0.55: 2,026 controls, capped at 254 in DOM order, several lookalike links. A candidate-set limit, not a loop one |
 | jev-ultrafast, Google Flights, for scale | 11 actions in 7.07 s; Jev median 178 ms over 17 requests (3.7 s of the 7); ~640 ms per action all-in |
+| **2026-09-19, after the question rewording** (Search Console, "open the Pages indexing report", `expect` set) | DONE (verified), 1 click, 3.5 s, 5,641 tokens over 3 requests (Jev 695 ms). `done` 0.07 on the overview then **0.98** on arrival, pick p=0.92, `mutates` 0.03, `auth_wall` 0.02/0.01. Every probability inside the band recorded above, so the `recent_actions` wording and the untrusted-data line moved nothing against a threshold — which is the only thing this run was for |
 
 ### The Claude-driven baseline, measured (2026-09-18)
 
