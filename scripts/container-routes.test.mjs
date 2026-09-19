@@ -15,7 +15,13 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
-import { matchContainerRoute, reloadRouteTable, unmatchedConsoleClaim } from "../server/dist/routes.js";
+import {
+  accountForContainer,
+  describeRouteTable,
+  matchContainerRoute,
+  reloadRouteTable,
+  unmatchedConsoleClaim,
+} from "../server/dist/routes.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
@@ -398,6 +404,90 @@ test("a more specific rule wins, and *. excludes the apex", async (t) => {
   assert.equal(matchContainerRoute(table, "https://other.example.com/x")?.container, "Personal");
   assert.equal(matchContainerRoute(table, "https://sub.only-subs.example/")?.container, "Buildersbuddy");
   assert.equal(matchContainerRoute(table, "https://only-subs.example/"), null);
+});
+
+test("a host's account wins over its container's default, and absent means silent", async (t) => {
+  const previous = process.env.ZEN_MCP_ROUTES;
+  const file = join(dir, "accounts.json");
+  await writeFile(
+    file,
+    JSON.stringify({
+      containers: {
+        Geek: {
+          domains: [
+            "claude.ai",
+            { host: "pocketbuddy.org", account: "chris@pocketbuddy.org" },
+          ],
+          account: "cxrobx@gmail.com",
+        },
+        CXVentures: ["cxventures.io"],
+      },
+      routes: {
+        Geek: [{ host: "decodo.com", account: "cxrobx@gmail.com" }, "apify.com"],
+      },
+    }),
+    "utf8",
+  );
+  process.env.ZEN_MCP_ROUTES = file;
+  const table = reloadRouteTable();
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZEN_MCP_ROUTES;
+    else process.env.ZEN_MCP_ROUTES = previous;
+    reloadRouteTable();
+  });
+
+  // A host's own account wins over the container default - the whole point, since one jar
+  // holds several signed-in accounts and the host is what picks between them.
+  assert.equal(
+    matchContainerRoute(table, "https://pocketbuddy.org/accounts")?.account,
+    "chris@pocketbuddy.org",
+  );
+  // A host with no account of its own inherits the container's default...
+  assert.equal(matchContainerRoute(table, "https://claude.ai/new")?.account, "cxrobx@gmail.com");
+  assert.equal(matchContainerRoute(table, "https://console.apify.com/actors")?.account, "cxrobx@gmail.com");
+  // ...including a routes-section host, which is where Decodo actually lives.
+  assert.equal(matchContainerRoute(table, "https://dashboard.decodo.com/")?.account, "cxrobx@gmail.com");
+  // A container that declares none stays silent rather than guessing.
+  assert.equal(matchContainerRoute(table, "https://cxventures.io/")?.account, undefined);
+  assert.equal(accountForContainer(table, "Geek"), "cxrobx@gmail.com");
+  assert.equal(accountForContainer(table, "CXVentures"), null);
+  assert.equal(accountForContainer(table, "No Such Container"), null);
+
+  // Routing itself is unchanged by the added field.
+  assert.equal(matchContainerRoute(table, "https://dashboard.decodo.com/")?.container, "Geek");
+  assert.equal(matchContainerRoute(table, "https://cxventures.io/")?.container, "CXVentures");
+
+  const described = describeRouteTable(table);
+  assert.match(described, /pocketbuddy\.org \[account: chris@pocketbuddy\.org\]/);
+  assert.match(described, /\[account: cxrobx@gmail\.com\]/);
+  assert.doesNotMatch(described, /CXVentures[^\n]*account/);
+});
+
+test("a malformed account is refused loudly, not silently dropped", async (t) => {
+  const previous = process.env.ZEN_MCP_ROUTES;
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZEN_MCP_ROUTES;
+    else process.env.ZEN_MCP_ROUTES = previous;
+    reloadRouteTable();
+  });
+
+  const cases = [
+    [{ containers: { Geek: { domains: ["a.com"], account: "notanemail" } } }, /full signed-in address/],
+    [{ containers: { Geek: { domains: ["a.com"], account: "" } } }, /cannot be empty/],
+    [{ containers: { Geek: { domains: ["a.com"], account: 42 } } }, /must be a string/],
+    [{ routes: { Geek: [{ host: "a.com", account: "a b@c.com" }] } }, /cannot contain whitespace/],
+    [{ routes: { Geek: [{ account: "a@b.com" }] } }, /needs a non-empty "host"/],
+  ];
+  for (const [config, expected] of cases) {
+    const file = join(dir, `bad-account-${Math.random().toString(36).slice(2)}.json`);
+    await writeFile(file, JSON.stringify(config), "utf8");
+    process.env.ZEN_MCP_ROUTES = file;
+    const table = reloadRouteTable();
+    // The file is reported as broken rather than parsed into a half-table.
+    assert.equal(table.loaded, false, `expected refusal for ${JSON.stringify(config)}`);
+    assert.match(table.error ?? "", expected);
+    assert.equal(table.rules.length, 0);
+  }
 });
 
 test("a broken or absent route file reports itself instead of looking empty", async (t) => {

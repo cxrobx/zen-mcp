@@ -73,11 +73,27 @@ The table is a user config file, absent by default, read from `$XDG_CONFIG_HOME/
   "containers": {
     "Artist Advisory": ["artistadvisory.io"],
     "CXVentures": { "domains": ["cxventures.io"], "aliases": ["acct_1ABC99"] },
-    "Buildersbuddy": ["buildersbuddy.org", "localhost:3200"]
+    "Buildersbuddy": ["buildersbuddy.org", "localhost:3200"],
+    "Geek": {
+      "domains": ["claude.ai", { "host": "pocketbuddy.org", "account": "chris@pocketbuddy.org" }],
+      "account": "cxrobx@gmail.com"
+    }
+  },
+  "routes": {
+    "Geek": [{ "host": "decodo.com", "account": "cxrobx@gmail.com" }]
   },
   "consoles": ["search.google.com"]
 }
 ```
+
+Any host entry may be written as `{ "host": ..., "account": ... }`, and a container may
+declare a default `account`. The account is the identity expected to be signed in there,
+and it is **advisory**: `open_url`, `new_page_in_container` and `container_routes` print
+`expected account: ...`, nothing enforces it. A host's own account wins over its
+container's default, because one cookie jar routinely holds several signed-in accounts and
+the host is what picks between them — `pocketbuddy.org` and `decodo.com` both live in Geek
+but sign in as different people. A malformed account fails the whole file loudly rather
+than being dropped, the same as any other bad rule.
 
 Each **container** declares its identifying strings: `domains` (a bare list is shorthand for domains-only) and optional `aliases` — opaque strings like a Stripe account id for consoles whose URLs carry no domain. Every domain is automatically a host rule too, so the simple case needs nothing else.
 

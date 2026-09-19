@@ -165,6 +165,7 @@ Scale isn't a concern: rules compile as `domains + routes + (consoles × (domain
 | Locator-prefix parser (`css:`/`xpath:`/`text:`/`text*:`/`role:`) | `server/src/locator.ts` |
 | Container resolver (ported from the archived Marionette fork) | `server/src/container.ts` |
 | Host→container route table (load, match, describe) | `server/src/routes.ts` · config `~/.config/zen-mcp/containers.json` |
+| Expected signed-in account per host (advisory, printed not enforced) | `server/src/routes.ts` (`asAccount`, `accountForContainer`) · printed by `accountNote` in `server/src/tools.ts` |
 | Secret bindings + Keychain resolver for `fill_secret` | `server/src/secrets.ts` · config `~/.config/zen-mcp/secrets.json` |
 | Snapshot → one-line-per-control collector (`interactive_elements`) | `server/src/interactive.ts` |
 | Jev client + host allowlist | `server/src/jev.ts` · config `~/.config/zen-mcp/jev.json` · key `TYPESAFE_API_KEY` |

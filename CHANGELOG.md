@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Versions track the
 extension manifest and the AMO-signed XPI artifacts. Server, daemon, and shared
 package versions move together with the extension.
 
+## Unreleased — expected account per host
+
+The route table decided the cookie jar and stopped there, but a jar is not an identity: Geek
+holds four signed-in Google accounts, so `decodo.com` and `pocketbuddy.org` route to the same
+container and sign in as different people. The account chooser is where that goes wrong, and
+nothing in the transcript said which row was right.
+
+Any host entry may now carry one: `{ "host": "decodo.com", "account": "cxrobx@gmail.com" }`,
+and a container may declare a default `account` for the hosts that name none. A host's own
+account wins over the container default. `open_url`, `new_page_in_container` and
+`container_routes` print `expected account: ... (verify it at the account chooser)`.
+
+It is deliberately **advisory**, unlike `consoles`, which fails loudly. The table can see
+which jar a URL lands in; it cannot see which row gets clicked on a provider's chooser, so
+enforcement would be a promise the code cannot keep. A malformed `account` still fails the
+whole file loudly, like any other bad rule.
+
 ## Unreleased — container routing for shared consoles (Google Search Console et al.)
 
 Host → container routing answered "which cookie jar owns this domain?", which is the wrong

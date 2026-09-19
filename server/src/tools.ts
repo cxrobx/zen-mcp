@@ -61,6 +61,7 @@ import { JEV_KEY_NAME, askJev, loadJevConfig, requireJevHost, warmJev } from "./
 import { NavContext, withNavMeta } from "./nav-memory.js";
 import { requireSecretBinding, resolveSecret, scrubSecretValue } from "./secrets.js";
 import {
+  accountForContainer,
   describeRouteTable,
   loadRouteTable,
   matchContainerRoute,
@@ -388,6 +389,8 @@ interface ContainerDecision {
   routed: boolean;
   /** Present when the table has an equal-specificity conflict worth surfacing. */
   warning?: string;
+  /** Identity the config expects to be signed in here. Advisory - see accountNote. */
+  expectedAccount?: string;
 }
 
 function decisionLine(decision: ContainerDecision): string {
@@ -395,6 +398,16 @@ function decisionLine(decision: ContainerDecision): string {
     return `container: none (Firefox default cookie jar) - ${decision.reason}`;
   }
   return `container: ${decision.container.name} (${decision.container.cookieStoreId}) via ${decision.reason}`;
+}
+
+/**
+ * Advisory, and worded to stay that way. The table decides the cookie jar, but one jar
+ * routinely holds several signed-in accounts and nothing here can see which row gets
+ * clicked on a provider's account chooser - so this is a reminder to check, not a guard.
+ */
+function accountNote(decision: ContainerDecision): string | null {
+  if (!decision.expectedAccount) return null;
+  return `expected account: ${decision.expectedAccount} (from the route table; verify it at the account chooser)`;
 }
 
 function cookieStoreOf(decision: ContainerDecision): string {
@@ -677,11 +690,15 @@ export function registerTools(
    */
   async function decideContainer(url: string, override?: string): Promise<ContainerDecision> {
     if (override) {
-      return {
-        container: await containerNamed(override, "the container argument"),
+      const container = await containerNamed(override, "the container argument");
+      const decision: ContainerDecision = {
+        container,
         reason: "the container argument",
         routed: false,
       };
+      const account = accountForContainer(routes, container.name);
+      if (account) decision.expectedAccount = account;
+      return decision;
     }
     const match = matchContainerRoute(routes, url);
     if (match) {
@@ -691,6 +708,7 @@ export function registerTools(
         reason: `${ruleText(match)} in ${routes.path}`,
         routed: true,
       };
+      if (match.account) decision.expectedAccount = match.account;
       if (match.ambiguousWith) {
         decision.warning = `note: another rule of equal specificity maps this host to "${match.ambiguousWith}"; the first match won. Make one rule more specific.`;
       }
@@ -709,9 +727,18 @@ export function registerTools(
     }
     const scoped = await resolveScopeOnce(daemon, scope);
     if (scoped) {
-      return { container: scoped, reason: "the session default container", routed: false };
+      const decision: ContainerDecision = {
+        container: scoped,
+        reason: "the session default container",
+        routed: false,
+      };
+      const account = accountForContainer(routes, scoped.name);
+      if (account) decision.expectedAccount = account;
+      const broken = brokenTableWarning();
+      if (broken) decision.warning = broken;
+      return decision;
     }
-    return {
+    const decision: ContainerDecision = {
       container: null,
       reason:
         routes.rules.length > 0
@@ -719,6 +746,20 @@ export function registerTools(
           : "no host rules are configured and no session default container is set",
       routed: false,
     };
+    const broken = brokenTableWarning();
+    if (broken) decision.warning = broken;
+    return decision;
+  }
+
+  /**
+   * A route file this build cannot parse leaves zero rules, so every URL quietly takes the
+   * session-default path - the wrong-jar landing the table exists to prevent, wearing the
+   * costume of normal operation. Say it on the tab-opening call, not only in
+   * container_routes, because that is where the wrong jar actually happens.
+   */
+  function brokenTableWarning(): string | undefined {
+    if (!routes.error) return undefined;
+    return `warning: the route table did not load (${routes.error}), so NO host rule could apply and this fell back to the default jar. Fix ${routes.path}, then reload with container_routes.`;
   }
   server.registerTool(
     "list_containers",
@@ -769,6 +810,11 @@ export function registerTools(
                 ? `${url} -> "${match.container}" via ${match.pattern} (${match.kind} host match + identifying string)`
                 : `${url} -> "${match.container}" via rule "${match.pattern}" (${match.kind} host match)`,
             );
+            if (match.account) {
+              lines.push(
+                `expected account: ${match.account} (from the route table; verify it at the account chooser)`,
+              );
+            }
             if (match.ambiguousWith) {
               lines.push(
                 `warning: an equal-specificity rule maps it to "${match.ambiguousWith}"; the first match wins.`,
@@ -925,6 +971,8 @@ export function registerTools(
         const target = parseUrlTarget(url);
         const store = cookieStoreOf(decision);
         const tail: string[] = [decisionLine(decision)];
+        const account = accountNote(decision);
+        if (account) tail.push(account);
         if (decision.warning) tail.push(decision.warning);
 
         if (mode !== "never" && target) {
@@ -1029,6 +1077,17 @@ export function registerTools(
         rememberPendingUrl(r.tabId, url);
         const lines = [`new page tabId=${r.tabId} -> ${url} (${container.name})`];
         const match = matchContainerRoute(routes, url);
+        // The host's own account only applies in the jar the table picked; when the caller
+        // overrides that jar, the container's default is the only claim still true here.
+        const expected =
+          match && match.container === container.name
+            ? (match.account ?? accountForContainer(routes, container.name))
+            : accountForContainer(routes, container.name);
+        if (expected) {
+          lines.push(
+            `expected account: ${expected} (from the route table; verify it at the account chooser)`,
+          );
+        }
         if (match && match.container !== container.name) {
           lines.push(
             `note: ${ruleText(match)} maps this URL to "${match.container}"; opened in "${container.name}" as requested.`,
