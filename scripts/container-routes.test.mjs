@@ -413,18 +413,11 @@ test("a host's account wins over its container's default, and absent means silen
     file,
     JSON.stringify({
       containers: {
-        Geek: {
-          domains: [
-            "claude.ai",
-            { host: "pocketbuddy.org", account: "chris@pocketbuddy.org" },
-          ],
-          account: "cxrobx@gmail.com",
-        },
+        Geek: { domains: ["pocketbuddy.org", "claude.ai"], account: "cxrobx@gmail.com" },
         CXVentures: ["cxventures.io"],
       },
-      routes: {
-        Geek: [{ host: "decodo.com", account: "cxrobx@gmail.com" }, "apify.com"],
-      },
+      routes: { Geek: ["decodo.com"] },
+      accounts: { "pocketbuddy.org": "chris@pocketbuddy.org" },
     }),
     "utf8",
   );
@@ -442,10 +435,8 @@ test("a host's account wins over its container's default, and absent means silen
     matchContainerRoute(table, "https://pocketbuddy.org/accounts")?.account,
     "chris@pocketbuddy.org",
   );
-  // A host with no account of its own inherits the container's default...
+  // A host with no entry inherits the container default, from either section.
   assert.equal(matchContainerRoute(table, "https://claude.ai/new")?.account, "cxrobx@gmail.com");
-  assert.equal(matchContainerRoute(table, "https://console.apify.com/actors")?.account, "cxrobx@gmail.com");
-  // ...including a routes-section host, which is where Decodo actually lives.
   assert.equal(matchContainerRoute(table, "https://dashboard.decodo.com/")?.account, "cxrobx@gmail.com");
   // A container that declares none stays silent rather than guessing.
   assert.equal(matchContainerRoute(table, "https://cxventures.io/")?.account, undefined);
@@ -458,12 +449,38 @@ test("a host's account wins over its container's default, and absent means silen
   assert.equal(matchContainerRoute(table, "https://cxventures.io/")?.container, "CXVentures");
 
   const described = describeRouteTable(table);
-  assert.match(described, /pocketbuddy\.org \[account: chris@pocketbuddy\.org\]/);
   assert.match(described, /\[account: cxrobx@gmail\.com\]/);
   assert.doesNotMatch(described, /CXVentures[^\n]*account/);
 });
 
-test("a malformed account is refused loudly, not silently dropped", async (t) => {
+test("every account form is one an older server skips instead of choking on", async (t) => {
+  const previous = process.env.ZEN_MCP_ROUTES;
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZEN_MCP_ROUTES;
+    else process.env.ZEN_MCP_ROUTES = previous;
+    reloadRouteTable();
+  });
+  // Dozens of long-lived MCP processes read this file and load their parser once, so a
+  // grammar only new code can read disarms routing everywhere until the last one cycles.
+  // Both carriers must therefore be things an older parser skips: an unknown TOP-LEVEL key
+  // and an unknown key on a container OBJECT. Neither may be a non-string in a pattern list.
+  const config = {
+    containers: { Geek: { domains: ["pocketbuddy.org"], account: "cxrobx@gmail.com" } },
+    routes: { Geek: ["decodo.com"] },
+    accounts: { "pocketbuddy.org": "chris@pocketbuddy.org" },
+  };
+  for (const list of [config.routes.Geek, config.containers.Geek.domains]) {
+    for (const entry of list) assert.equal(typeof entry, "string");
+  }
+  const file = join(dir, "forward-compat.json");
+  await writeFile(file, JSON.stringify(config), "utf8");
+  process.env.ZEN_MCP_ROUTES = file;
+  const table = reloadRouteTable();
+  assert.equal(table.loaded, true);
+  assert.equal(table.rules.length, 2);
+});
+
+test("a malformed or unroutable account is refused loudly, not silently dropped", async (t) => {
   const previous = process.env.ZEN_MCP_ROUTES;
   t.after(() => {
     if (previous === undefined) delete process.env.ZEN_MCP_ROUTES;
@@ -471,19 +488,21 @@ test("a malformed account is refused loudly, not silently dropped", async (t) =>
     reloadRouteTable();
   });
 
+  const base = { routes: { Geek: ["a.com"] } };
   const cases = [
     [{ containers: { Geek: { domains: ["a.com"], account: "notanemail" } } }, /full signed-in address/],
     [{ containers: { Geek: { domains: ["a.com"], account: "" } } }, /cannot be empty/],
     [{ containers: { Geek: { domains: ["a.com"], account: 42 } } }, /must be a string/],
-    [{ routes: { Geek: [{ host: "a.com", account: "a b@c.com" }] } }, /cannot contain whitespace/],
-    [{ routes: { Geek: [{ account: "a@b.com" }] } }, /needs a non-empty "host"/],
+    [{ ...base, accounts: { "a.com": "a b@c.com" } }, /cannot contain whitespace/],
+    [{ ...base, accounts: "nope" }, /"accounts" must be an object/],
+    // A typo'd host would otherwise sit in the file doing nothing at all.
+    [{ ...base, accounts: { "typo.com": "a@b.com" } }, /no container or route maps to/],
   ];
   for (const [config, expected] of cases) {
     const file = join(dir, `bad-account-${Math.random().toString(36).slice(2)}.json`);
     await writeFile(file, JSON.stringify(config), "utf8");
     process.env.ZEN_MCP_ROUTES = file;
     const table = reloadRouteTable();
-    // The file is reported as broken rather than parsed into a half-table.
     assert.equal(table.loaded, false, `expected refusal for ${JSON.stringify(config)}`);
     assert.match(table.error ?? "", expected);
     assert.equal(table.rules.length, 0);

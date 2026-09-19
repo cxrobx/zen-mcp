@@ -18,12 +18,20 @@ import { join } from "node:path";
 //     exists to prevent. A plain "routes" rule on the same host acts as the explicit
 //     default when that hard failure is not wanted.
 //
-// Any host-bearing entry may carry an "account": the identity expected to be signed in
-// there, e.g. { "host": "decodo.com", "account": "cxrobx@gmail.com" }. It is ADVISORY and
-// printed, never enforced - the table decides the cookie jar, but nothing here can see
-// which row gets clicked on a provider's account chooser. A container may declare a
-// default account; a host's own account wins over it, because one jar routinely holds
-// several signed-in accounts and the host is what picks between them.
+//   "accounts"  - host -> the identity expected to be signed in there. A container may also
+//     declare a default "account" for its hosts. The host's own entry wins, because one jar
+//     routinely holds several signed-in accounts and the host is what picks between them.
+//     ADVISORY and printed, never enforced: this decides the cookie jar, but nothing here
+//     can see which row gets clicked on a provider's account chooser.
+//
+// Accounts live in their own top-level section, and a container's account is an extra key
+// on its object, for one reason: EVERY FORM IN THIS FILE MUST BE IGNORABLE BY AN OLDER
+// SERVER. Dozens of long-lived MCP processes read this file (13 sessions x 7 containers was
+// normal), they load their code once, and a session can stay up for weeks - so a grammar
+// only new code can parse disarms routing everywhere until the last one cycles, and the
+// fallback is the silent wrong jar this table exists to prevent. An unknown top-level key
+// and an unknown object key are both skipped by every past parser; a non-string inside a
+// pattern list is not.
 
 export interface CompiledRule {
   /** Pattern exactly as written in the config (or synthesized for cross-product rules). */
@@ -45,12 +53,6 @@ export interface CompiledRule {
   account: string | null;
 }
 
-/** A host pattern as written, with the account that entry declared (if any). */
-export interface PatternEntry {
-  pattern: string;
-  account: string | null;
-}
-
 /** A shared multi-project host from the "consoles" section. */
 export interface CompiledConsole {
   pattern: string;
@@ -62,7 +64,7 @@ export interface CompiledConsole {
 /** One "containers" entry, kept for description and claim reporting. */
 export interface ContainerDef {
   container: string;
-  domains: PatternEntry[];
+  domains: string[];
   aliases: string[];
   /** Default identity for hosts in this container that declare none of their own. */
   account: string | null;
@@ -211,27 +213,25 @@ function asAccount(value: unknown, where: string): string {
   return account;
 }
 
-/**
- * Host patterns, each optionally carrying its own account. Accepts the original string
- * form and { "host": "...", "account": "..." }, so adding an account to one host never
- * reshapes the rest of the list.
- */
-function asPatternEntries(value: unknown, where: string): PatternEntry[] {
-  const list = Array.isArray(value) ? value : [value];
-  return list.map((item) => {
-    if (typeof item === "string") return { pattern: item, account: null };
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new Error(`host entries must be strings or { host, account } objects (${where})`);
-    }
-    const e = item as { host?: unknown; account?: unknown };
-    if (typeof e.host !== "string" || e.host.trim().length === 0) {
-      throw new Error(`each host entry object needs a non-empty "host" (${where})`);
-    }
-    return {
-      pattern: e.host,
-      account: e.account === undefined ? null : asAccount(e.account, `host "${e.host.trim()}"`),
-    };
-  });
+/** The key a rule and an "accounts" entry agree on: normalized host, plus :port if pinned. */
+function accountKey(host: string, port: string | null): string {
+  return port ? `${host}:${port}` : host;
+}
+
+/** "accounts": { "decodo.com": "you@example.com" } -> normalized host -> account. */
+function compileAccounts(source: unknown): Map<string, string> {
+  const map = new Map<string, string>();
+  if (source === undefined) return map;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new Error('"accounts" must be an object mapping a host to an account');
+  }
+  for (const [host, value] of Object.entries(source as Record<string, unknown>)) {
+    const trimmed = host.trim();
+    if (trimmed.length === 0) throw new Error('"accounts" hosts cannot be empty');
+    const parsed = parseHostPattern(trimmed);
+    map.set(accountKey(parsed.host, parsed.port), asAccount(value, `accounts."${trimmed}"`));
+  }
+  return map;
 }
 
 interface CompiledSections {
@@ -247,7 +247,8 @@ function compileTable(parsed: unknown): CompiledSections {
   const record = parsed as Record<string, unknown>;
   // Structured shape: any of "routes", "containers", "consoles" at the top level. A bare
   // { "Container": [patterns] } object still works too, for a minimal hand-written file.
-  const structured = "routes" in record || "containers" in record || "consoles" in record;
+  const structured =
+    "routes" in record || "containers" in record || "consoles" in record || "accounts" in record;
 
   const rules: CompiledRule[] = [];
   const push = (rule: CompiledRule) => {
@@ -258,7 +259,7 @@ function compileTable(parsed: unknown): CompiledSections {
   const routesSource = structured ? record.routes : record;
   if (routesSource !== undefined) {
     for (const { container, patterns } of routePairs(routesSource)) {
-      for (const entry of patterns) push(compilePattern(entry.pattern, container, entry.account));
+      for (const pattern of patterns) push(compilePattern(pattern, container));
     }
   }
 
@@ -271,9 +272,7 @@ function compileTable(parsed: unknown): CompiledSections {
   // Every domain is also a plain host rule - "containers" replaces "routes" for the
   // simple case, it does not require duplicating each domain in both sections.
   for (const def of containerDefs) {
-    for (const entry of def.domains) {
-      push(compilePattern(entry.pattern, def.container, entry.account ?? def.account));
-    }
+    for (const domain of def.domains) push(compilePattern(domain, def.container));
   }
 
   // The cross-product: one rule per (console, identifying string). The rule matches only
@@ -281,10 +280,10 @@ function compileTable(parsed: unknown): CompiledSections {
   for (const console of consoles) {
     for (const def of containerDefs) {
       const tokens = [
-        ...def.domains.map((d) => ({ token: domainToken(d.pattern, def.container), account: d.account })),
-        ...def.aliases.map((a) => ({ token: normalizeToken(a, def.container), account: null })),
+        ...def.domains.map((d) => domainToken(d, def.container)),
+        ...def.aliases.map((a) => normalizeToken(a, def.container)),
       ];
-      for (const { token, account } of tokens) {
+      for (const token of tokens) {
         push({
           pattern: `console "${console.pattern}" + "${token}"`,
           container: def.container,
@@ -292,17 +291,35 @@ function compileTable(parsed: unknown): CompiledSections {
           port: console.port,
           subdomainsOnly: console.subdomainsOnly,
           urlContains: token,
-          account: account ?? def.account,
+          account: null,
         });
       }
+    }
+  }
+
+  // Stamp identities last, so one pass covers rules from every section. A host entry wins
+  // over its container's default; an "accounts" host that routes nowhere is a typo that
+  // would otherwise sit there doing nothing, so it fails the file like any other bad rule.
+  const accounts = compileAccounts(structured ? record.accounts : undefined);
+  const byContainer = new Map(containerDefs.map((d) => [d.container, d.account]));
+  const claimed = new Set<string>();
+  for (const rule of rules) {
+    const key = accountKey(rule.host, rule.port);
+    const own = accounts.get(key);
+    if (own !== undefined) claimed.add(key);
+    rule.account = own ?? byContainer.get(rule.container) ?? null;
+  }
+  for (const key of accounts.keys()) {
+    if (!claimed.has(key)) {
+      throw new Error(`"accounts" names "${key}", which no container or route maps to`);
     }
   }
 
   return { rules, consoles, containerDefs };
 }
 
-function routePairs(source: unknown): Array<{ container: string; patterns: PatternEntry[] }> {
-  const pairs: Array<{ container: string; patterns: PatternEntry[] }> = [];
+function routePairs(source: unknown): Array<{ container: string; patterns: string[] }> {
+  const pairs: Array<{ container: string; patterns: string[] }> = [];
   if (Array.isArray(source)) {
     for (const entry of source) {
       if (!entry || typeof entry !== "object") throw new Error("route entries must be objects");
@@ -310,18 +327,12 @@ function routePairs(source: unknown): Array<{ container: string; patterns: Patte
       if (typeof e.container !== "string" || e.container.trim().length === 0) {
         throw new Error('each route entry needs a non-empty "container"');
       }
-      pairs.push({
-        container: e.container.trim(),
-        patterns: asPatternEntries(e.match ?? e.hosts, `routes entry "${e.container.trim()}"`),
-      });
+      pairs.push({ container: e.container.trim(), patterns: asPatternList(e.match ?? e.hosts) });
     }
   } else if (source && typeof source === "object") {
     for (const [container, value] of Object.entries(source as Record<string, unknown>)) {
       if (container.trim().length === 0) throw new Error("container names cannot be empty");
-      pairs.push({
-        container: container.trim(),
-        patterns: asPatternEntries(value, `routes."${container.trim()}"`),
-      });
+      pairs.push({ container: container.trim(), patterns: asPatternList(value) });
     }
   } else {
     throw new Error('"routes" must be an object or an array');
@@ -340,19 +351,14 @@ function compileContainerDefs(source: unknown): ContainerDef[] {
     if (container.length === 0) throw new Error("container names cannot be empty");
     // Shorthand: "Geek": ["a.com"] or "Geek": "a.com" means domains only.
     if (typeof value === "string" || Array.isArray(value)) {
-      defs.push({
-        container,
-        domains: asPatternEntries(value, `container "${container}"`),
-        aliases: [],
-        account: null,
-      });
+      defs.push({ container, domains: asPatternList(value), aliases: [], account: null });
       continue;
     }
     if (!value || typeof value !== "object") {
       throw new Error(`container "${container}" must map to a domain list or {domains, aliases}`);
     }
     const v = value as { domains?: unknown; aliases?: unknown; account?: unknown };
-    const domains = v.domains === undefined ? [] : asPatternEntries(v.domains, `container "${container}"`);
+    const domains = v.domains === undefined ? [] : asPatternList(v.domains);
     const aliases = v.aliases === undefined ? [] : asPatternList(v.aliases);
     const account = v.account === undefined ? null : asAccount(v.account, `container "${container}"`);
     if (domains.length === 0 && aliases.length === 0) {
@@ -438,10 +444,10 @@ function parseHostPattern(original: string): {
   return { host, port, subdomainsOnly };
 }
 
-function compilePattern(pattern: string, container: string, account: string | null = null): CompiledRule {
+function compilePattern(pattern: string, container: string): CompiledRule {
   const original = pattern.trim();
   if (original.length === 0) throw new Error("empty host pattern");
-  return { pattern: original, container, ...parseHostPattern(original), urlContains: null, account };
+  return { pattern: original, container, ...parseHostPattern(original), urlContains: null, account: null };
 }
 
 /**
@@ -626,8 +632,8 @@ export function describeRouteTable(table: RouteTable): string {
       "",
       '{ "containers": { "Artist Advisory": ["artistadvisory.io"] }, "consoles": ["search.google.com"] }',
       "",
-      'Any host entry may be { "host": "x.com", "account": "you@example.com" }, and a',
-      'container may carry a default "account" - printed as an expectation, never enforced.',
+      'An "accounts" section maps a host to the identity expected there, and a container may',
+      'carry a default "account" - printed as an expectation, never enforced.',
       "Each container lists its domains (and opaque \"aliases\" for consoles that key by",
       "account id). A domain matches its host and subdomains; \"*.example.com\" matches",
       'subdomains only, "localhost:3000" pins a port. A console is a shared host routed by',
@@ -642,10 +648,7 @@ export function describeRouteTable(table: RouteTable): string {
     for (const def of table.containerDefs) {
       const aliases = def.aliases.length > 0 ? ` (aliases: ${def.aliases.join(", ")})` : "";
       const account = def.account ? ` [account: ${def.account}]` : "";
-      const domains = def.domains
-        .map((d) => (d.account && d.account !== def.account ? `${d.pattern} [account: ${d.account}]` : d.pattern))
-        .join(", ");
-      lines.push(`- ${def.container}: ${domains}${aliases}${account}`);
+      lines.push(`- ${def.container}: ${def.domains.join(", ")}${aliases}${account}`);
     }
     if (table.consoles.length > 0) {
       lines.push(
@@ -662,7 +665,7 @@ export function describeRouteTable(table: RouteTable): string {
   // Patterns are trimmed at compile time but config domains are not, so compare trimmed -
   // otherwise a domain written with stray whitespace is listed twice.
   const fromContainers = new Set(
-    table.containerDefs.flatMap((d) => d.domains.map((entry) => entry.pattern.trim())),
+    table.containerDefs.flatMap((d) => d.domains.map((domain) => domain.trim())),
   );
   const plain = table.rules.filter((r) => r.urlContains === null && !fromContainers.has(r.pattern));
   if (plain.length > 0) {

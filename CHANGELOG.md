@@ -11,10 +11,17 @@ holds four signed-in Google accounts, so `decodo.com` and `pocketbuddy.org` rout
 container and sign in as different people. The account chooser is where that goes wrong, and
 nothing in the transcript said which row was right.
 
-Any host entry may now carry one: `{ "host": "decodo.com", "account": "cxrobx@gmail.com" }`,
-and a container may declare a default `account` for the hosts that name none. A host's own
-account wins over the container default. `open_url`, `new_page_in_container` and
-`container_routes` print `expected account: ... (verify it at the account chooser)`.
+A new top-level `accounts` section maps a host to the identity expected there, and a container
+may declare a default `account` for the hosts that name none. The host's own entry wins.
+`open_url`, `new_page_in_container` and `container_routes` print
+`expected account: ... (verify it at the account chooser)`.
+
+Both carriers are keys an older parser skips, deliberately: dozens of long-lived MCP processes
+read this file and load their parser once, so a grammar only new code can read would disarm
+routing in every running session until the last one cycled — the silent wrong jar the table
+exists to prevent. An inline `{ host, account }` entry inside a pattern list was the obvious
+shape and was rejected for exactly this reason; an `accounts` host that routes nowhere fails
+the file loudly rather than sitting there doing nothing.
 
 It is deliberately **advisory**, unlike `consoles`, which fails loudly. The table can see
 which jar a URL lands in; it cannot see which row gets clicked on a provider's chooser, so
