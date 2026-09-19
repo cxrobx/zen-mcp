@@ -479,6 +479,16 @@ function sameHostAndPort(pageUrl: string, target: { host: string; port: string }
   return parsed.host === target.host && parsed.port === target.port;
 }
 
+/**
+ * An empty snapshot because the in-page walk THREW is a bug in the walk, not a page without
+ * controls, and the two are indistinguishable from the outside - which is exactly how one
+ * unescaped id on a Wikipedia heading read as "this page has no interactive elements" for a
+ * page with 2,465 of them. Say which it is.
+ */
+function snapshotErrorText(message: string): string {
+  return `the in-page snapshot walk threw and produced nothing: ${message}. This is a bug in the snapshot code, not an empty page - report it rather than concluding the page has no controls.`;
+}
+
 function feedbackLine(r: InteractionResult): string {
   const fb = r.feedback;
   // The click still reached the element, so this is a note, not a failure - but it is the
@@ -1281,6 +1291,7 @@ export function registerTools(
         if (includeIframes !== undefined) params.includeIframes = includeIframes;
         const r = await daemon.call<TakeSnapshotResult>(Methods.DomTakeSnapshot, params);
         if (r.selectorError) return fail(new Error(r.selectorError));
+        if (r.snapshotError) return fail(new Error(snapshotErrorText(r.snapshotError)));
         const header = `snapshot ${r.snapshotId} for tabId=${r.tabId} (${r.uidMap.length} UIDs${r.truncated ? ", truncated" : ""})`;
         return withNavMeta(ok(`${header}\n${withResponseBudget(formatSnapshotTree(r.tree), maxBytes).text}`), {
           url: page.url,
@@ -1319,6 +1330,7 @@ export function registerTools(
         if (includeIframes !== undefined) params.includeIframes = includeIframes;
         const r = await daemon.call<TakeSnapshotResult>(Methods.DomTakeSnapshot, params);
         if (r.selectorError) return fail(new Error(r.selectorError));
+        if (r.snapshotError) return fail(new Error(snapshotErrorText(r.snapshotError)));
         const pageUrl = effectivePageUrl(page);
         const collection = collectInteractive(r.tree, r.uidMap, { limit, pageUrl });
         const header = `interactive elements for tabId=${r.tabId} (snapshot ${r.snapshotId}): ${collection.elements.length} of ${collection.total}${collection.truncated ? " - raise limit to see the rest" : ""}${r.truncated ? " (snapshot itself was truncated)" : ""}`;

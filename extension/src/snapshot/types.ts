@@ -63,4 +63,6 @@ export interface CreateSnapshotResult {
   uidMap: UidEntry[];
   truncated: boolean;
   selectorError?: string;
+  /** The walk threw and produced nothing. Without this an empty tree cannot explain itself. */
+  snapshotError?: string;
 }

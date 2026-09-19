@@ -54,8 +54,13 @@ function createSnapshot(
       return { tree: null, uidMap: [], truncated: result.truncated };
     }
     return result;
-  } catch {
-    return { tree: null, uidMap: [], truncated: false };
+  } catch (err) {
+    // Report it. Swallowing this was how a single throw deep in the walk - one Wikipedia
+    // heading whose id contained a quote character - presented as "this page has no
+    // interactive elements" on a page with 2,465 of them, with nothing anywhere to say
+    // otherwise. An empty snapshot must be able to explain itself.
+    const message = err instanceof Error ? err.message : String(err);
+    return { tree: null, uidMap: [], truncated: false, snapshotError: message.slice(0, 300) };
   }
 }
 

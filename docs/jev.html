@@ -798,6 +798,18 @@ limit, not a loop one</td>
 the 7); ~640 ms per action all-in</td>
 </tr>
 <tr>
+<td><strong>2026-09-19, extension 0.0.19/0.0.20 live</strong> (Search
+Console, same goal)</td>
+<td>DONE (verified), 1 click, 4.5 s, <code>done</code> 0.97, pick
+p=0.87, <code>mutates</code> 0.04 — in band. Occlusion confirmed on a
+fixture: a covered click is named (<code>div "Cookie consent"</code>)
+and <strong>still navigates</strong>, since events are dispatched on the
+element. Viewport ordering confirmed by scrolling: the listing head is
+the page header at <code>scrollY=0</code> and the sticky TOC at
+<code>scrollY=30000</code> — DOM order cannot do that. Gödel article:
+<strong>0 → 922 controls</strong> once the snapshot throw was fixed</td>
+</tr>
+<tr>
 <td><strong>2026-09-19, after the question rewording</strong> (Search
 Console, "open the Pages indexing report", <code>expect</code> set)</td>
 <td>DONE (verified), 1 click, 3.5 s, 5,641 tokens over 3 requests (Jev
@@ -912,6 +924,17 @@ with a note appended. Rejecting instead would have been the upstream
 behavior and the wrong port: it would break every legitimate click under
 a transparent layer for no gain, since the click was never going
 astray.</li>
+<li><strong>A snapshot can come back empty because the walk threw, and
+that used to be invisible</strong> (fixed 0.0.20). Verifying the
+reordering below on the Gödel article returned <strong>0 controls on a
+page with 922</strong>: one heading whose <code>id</code> contained a
+quote character made an interpolated <code>label[for="…"]</code>
+selector throw, and <code>inject.ts</code> swallowed it into an empty
+tree. <code>navigate_goal</code> on such a page hands back with "no
+eligible control", which reads exactly like a Jev limitation and is not
+one. <code>snapshotError</code> now says which it is. If a page ever
+reports no controls, believe the tool only if it does <em>not</em> carry
+that field.</li>
 <li><strong>Big pages are capped at 254, now on-screen first</strong>
 (extension 0.0.19). The snapshot's own filter is style-based
 (<code>isRelevant</code> → <code>isVisible</code>:

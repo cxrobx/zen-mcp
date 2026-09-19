@@ -173,6 +173,11 @@ export interface TakeSnapshotResult {
   uidMap: SnapshotUidEntry[];
   truncated: boolean;
   selectorError?: string;
+  /**
+   * The in-page walk threw and returned nothing. An empty tree with this set is a bug to
+   * report, not a page without controls.
+   */
+  snapshotError?: string;
 }
 
 export interface ClearSnapshotParams {

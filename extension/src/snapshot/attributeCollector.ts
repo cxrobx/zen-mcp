@@ -24,9 +24,20 @@ export function getElementName(el: Element): string | undefined {
   const htmlEl = el as HTMLElement;
   const elId = htmlEl.id;
   if (elId) {
-    const label = document.querySelector(`label[for="${elId}"]`);
-    if (label?.textContent) {
-      return label.textContent.trim();
+    // CSS.escape, not string interpolation. An id is author-controlled text, not a selector:
+    // Wikipedia ships `id='Construction_of_a_statement_about_"provability"'`, whose quotes
+    // closed the selector string and made querySelector throw. That throw unwound the whole
+    // walk and inject.ts turned it into a silent empty snapshot - ONE such id anywhere on a
+    // page returned zero controls for the entire document. The try/catch is the backstop for
+    // whatever else an id can hold (newlines, lone surrogates); an id that cannot be
+    // expressed as a selector simply has no label.
+    try {
+      const label = document.querySelector(`label[for=${CSS.escape(elId)}]`);
+      if (label?.textContent) {
+        return label.textContent.trim();
+      }
+    } catch {
+      // No label for this id.
     }
   }
 

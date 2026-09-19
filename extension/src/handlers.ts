@@ -1222,6 +1222,7 @@ export const handlers: Record<string, Handler> = {
       uidMap: SnapshotUidEntry[];
       truncated: boolean;
       selectorError?: string;
+      snapshotError?: string;
       frameUrl?: string;
     };
     const capture = (id: unknown, opts: unknown): FrameSnapshotResult => {
@@ -1284,6 +1285,7 @@ export const handlers: Record<string, Handler> = {
     let tree: TakeSnapshotResult["tree"] = null;
     let truncated = false;
     let selectorError: string | undefined;
+    let snapshotError: string | undefined;
 
     for (const injection of results) {
       if (injection.error || !injection.result) continue;
@@ -1291,6 +1293,7 @@ export const handlers: Record<string, Handler> = {
       const result = injection.result as FrameSnapshotResult;
       truncated = truncated || result.truncated;
       if (result.selectorError && !selectorError) selectorError = result.selectorError;
+      if (result.snapshotError && !snapshotError) snapshotError = result.snapshotError;
       for (const entry of result.uidMap) {
         const rewritten = {
           ...entry,
@@ -1319,6 +1322,9 @@ export const handlers: Record<string, Handler> = {
       uidMap,
       truncated,
       ...(selectorError && uidMap.length === 0 ? { selectorError } : {}),
+      // Reported whenever the walk threw, even if another frame still produced a tree:
+      // a partial snapshot that lost a frame to a bug must not look complete.
+      ...(snapshotError ? { snapshotError } : {}),
     };
   },
 
