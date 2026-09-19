@@ -457,6 +457,53 @@ test("goal: a same-page click asks for only a beat, and page_changed records it"
   assert.deepEqual(calls.ask[2].state.recent_actions, [{ control: 'button "Reports"', destination: null, page_changed: false }]);
 });
 
+test("goal: the settle corrects page_changed when the click feedback missed the navigation", async () => {
+  // Wikipedia's case: the click RPC returns before the load commits and reports navigated=false,
+  // so the settle - which watched the page afterwards - is the witness that counts.
+  const { deps, calls } = harness(
+    [home(), webhooks],
+    [
+      stepReply({ choice: "u2", probs: { u1: 0.03, u2: 0.95, none: 0.02 } }),
+      guardReply(0.04),
+      stepReply({ choice: "none", probs: { none: 1 } }),
+    ],
+  );
+  const click = deps.click;
+  deps.click = async (uid) => ({ ...(await click(uid)), navigated: false });
+  deps.settle = async (hint) => {
+    calls.settle.push(hint);
+    return hint.after === "click" ? { settled: true, changed: true } : { settled: true };
+  };
+  const r = await runGoal(deps, OPTS);
+  assert.equal(r.outcome, "handback");
+  assert.equal(r.finalPath, "/acct/webhooks");
+  // The click said nothing moved; the state Jev sees says otherwise, because the page did move.
+  assert.deepEqual(calls.settle[1], { after: "click", navigated: false });
+  assert.deepEqual(calls.ask[2].state.recent_actions, [
+    { control: 'link "Webhooks"', destination: "/acct/webhooks", page_changed: true },
+  ]);
+});
+
+test("goal: a settle that cannot tell leaves page_changed as the click reported it", async () => {
+  const { deps, calls } = harness(
+    [home(), webhooks],
+    [
+      stepReply({ choice: "u2", probs: { u1: 0.03, u2: 0.95, none: 0.02 } }),
+      guardReply(0.04),
+      stepReply({ choice: "none", probs: { none: 1 } }),
+    ],
+  );
+  // No `changed` at all: the pre-click fingerprint failed, so the settle has no opinion.
+  deps.settle = async (hint) => {
+    calls.settle.push(hint);
+    return { settled: true };
+  };
+  await runGoal(deps, OPTS);
+  assert.deepEqual(calls.ask[2].state.recent_actions, [
+    { control: 'link "Webhooks"', destination: "/acct/webhooks", page_changed: true },
+  ]);
+});
+
 test("goal: the page moving between observation and click hands back without clicking", async () => {
   const { deps, calls } = harness(
     [home(), webhooks],

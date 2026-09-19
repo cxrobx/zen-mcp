@@ -2000,6 +2000,9 @@ export function registerTools(
               let quietMs = STABLE_DEFAULT_MS;
               let pollMs = STABLE_POLL_MS;
               const notes: string[] = [];
+              // What the loop reports to Jev as `page_changed`. Left undefined when there is
+              // nothing to compare against (no pre-click fingerprint, or no click at all).
+              let changed: boolean | undefined;
               if (hint.after === "click") {
                 // First: anything at all moved (count, title, path)? Then: if this was a navigation -
                 // reported by the click, or seen as a path change here, since the click feedback races
@@ -2008,10 +2011,13 @@ export function registerTools(
                 // keeps one static title, falls through after the cap rather than never.
                 const first = await waitForChange(daemon, target, beforeClick, anythingChanged, GOAL_CHANGE_AFTER_CLICK_MS, GOAL_SETTLE_POLL_MS);
                 notes.push(`${first.changed ? "page changed after" : "nothing changed for"} ${first.elapsedMs}ms`);
+                if (beforeClick !== null) changed = first.changed;
                 const navigated = hint.navigated || (first.now !== null && beforeClick !== null && pathChanged(first.now, beforeClick));
                 if (navigated && beforeClick?.title !== null && !(first.now && beforeClick && titleChanged(first.now, beforeClick))) {
                   const t = await waitForChange(daemon, target, beforeClick, titleChanged, GOAL_TITLE_CHANGE_CAP_MS, GOAL_SETTLE_POLL_MS);
                   notes.push(`title ${t.changed ? "changed after" : "unchanged for"} ${t.elapsedMs}ms`);
+                  // A late title swap is still a change, even if the first window saw nothing.
+                  if (t.changed) changed = true;
                 }
                 quietMs = hint.navigated ? GOAL_SETTLE_AFTER_NAV_MS : GOAL_SETTLE_AFTER_CLICK_MS;
                 pollMs = GOAL_SETTLE_POLL_MS;
@@ -2020,9 +2026,10 @@ export function registerTools(
                 const holdTimeout = hint.after === "click" ? GOAL_POST_CLICK_HOLD_TIMEOUT_MS : GOAL_SETTLE_TIMEOUT_MS;
                 const r = await waitForStable(daemon, target, quietMs, holdTimeout, pollMs);
                 notes.push(`${r.count} controls held ${quietMs}ms at ${r.elapsedMs}ms`);
-                return { settled: true, detail: notes.join(", ") };
+                return { settled: true, detail: notes.join(", "), changed };
               } catch (err) {
-                if (err instanceof ZenToolError && err.code === "TIMEOUT") return { settled: false, detail: notes.join(", ") };
+                if (err instanceof ZenToolError && err.code === "TIMEOUT")
+                  return { settled: false, detail: notes.join(", "), changed };
                 throw err;
               }
             },
