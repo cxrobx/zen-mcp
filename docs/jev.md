@@ -9,6 +9,11 @@ trained-classifier axis — lives in the vault at [`~/Documents/CX/Resources/AI 
 verdict used to sit in this file; they were moved out 2026-09-19 because a single project's
 exploration is the wrong home for a portfolio-wide decision.
 
+*This `.md` is the source of truth. `docs/jev.html` — the copy in Onyx as *Jev in zen-mcp* —
+is a **generated reading guide**: edit the Markdown and re-render with
+`~/.claude/docs/html-design/from-md.sh docs/jev.md docs/jev.html "How navigate_goal was built"`.
+Never edit the HTML directly.*
+
 What stays here is what this build learned: the division of labour, the containment
 posture, thresholds set by the cost of being wrong, and the measurements. Those are
 examples of rules that travel — the vault note is where the travelling is recorded.
