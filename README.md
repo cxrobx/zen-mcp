@@ -74,9 +74,9 @@ The table is a user config file, absent by default, read from `$XDG_CONFIG_HOME/
     "Artist Advisory": ["artistadvisory.io"],
     "CXVentures": { "domains": ["cxventures.io"], "aliases": ["acct_1ABC99"] },
     "Buildersbuddy": ["buildersbuddy.org", "localhost:3200"],
-    "Geek": { "domains": ["claude.ai", "pocketbuddy.org"], "account": "cxrobx@gmail.com" }
+    "Geek": { "domains": ["claude.ai", "pocketbuddy.org"], "account": "you@example.com" }
   },
-  "accounts": { "pocketbuddy.org": "chris@pocketbuddy.org" },
+  "accounts": { "pocketbuddy.org": "owner@example.org" },
   "consoles": ["search.google.com"]
 }
 ```

@@ -413,11 +413,11 @@ test("a host's account wins over its container's default, and absent means silen
     file,
     JSON.stringify({
       containers: {
-        Geek: { domains: ["pocketbuddy.org", "claude.ai"], account: "cxrobx@gmail.com" },
+        Geek: { domains: ["pocketbuddy.org", "claude.ai"], account: "you@example.com" },
         CXVentures: ["cxventures.io"],
       },
       routes: { Geek: ["decodo.com"] },
-      accounts: { "pocketbuddy.org": "chris@pocketbuddy.org" },
+      accounts: { "pocketbuddy.org": "owner@example.org" },
     }),
     "utf8",
   );
@@ -433,14 +433,14 @@ test("a host's account wins over its container's default, and absent means silen
   // holds several signed-in accounts and the host is what picks between them.
   assert.equal(
     matchContainerRoute(table, "https://pocketbuddy.org/accounts")?.account,
-    "chris@pocketbuddy.org",
+    "owner@example.org",
   );
   // A host with no entry inherits the container default, from either section.
-  assert.equal(matchContainerRoute(table, "https://claude.ai/new")?.account, "cxrobx@gmail.com");
-  assert.equal(matchContainerRoute(table, "https://dashboard.decodo.com/")?.account, "cxrobx@gmail.com");
+  assert.equal(matchContainerRoute(table, "https://claude.ai/new")?.account, "you@example.com");
+  assert.equal(matchContainerRoute(table, "https://dashboard.decodo.com/")?.account, "you@example.com");
   // A container that declares none stays silent rather than guessing.
   assert.equal(matchContainerRoute(table, "https://cxventures.io/")?.account, undefined);
-  assert.equal(accountForContainer(table, "Geek"), "cxrobx@gmail.com");
+  assert.equal(accountForContainer(table, "Geek"), "you@example.com");
   assert.equal(accountForContainer(table, "CXVentures"), null);
   assert.equal(accountForContainer(table, "No Such Container"), null);
 
@@ -449,7 +449,7 @@ test("a host's account wins over its container's default, and absent means silen
   assert.equal(matchContainerRoute(table, "https://cxventures.io/")?.container, "CXVentures");
 
   const described = describeRouteTable(table);
-  assert.match(described, /\[account: cxrobx@gmail\.com\]/);
+  assert.match(described, /\[account: you@example\.com\]/);
   assert.doesNotMatch(described, /CXVentures[^\n]*account/);
 });
 
@@ -465,9 +465,9 @@ test("every account form is one an older server skips instead of choking on", as
   // Both carriers must therefore be things an older parser skips: an unknown TOP-LEVEL key
   // and an unknown key on a container OBJECT. Neither may be a non-string in a pattern list.
   const config = {
-    containers: { Geek: { domains: ["pocketbuddy.org"], account: "cxrobx@gmail.com" } },
+    containers: { Geek: { domains: ["pocketbuddy.org"], account: "you@example.com" } },
     routes: { Geek: ["decodo.com"] },
-    accounts: { "pocketbuddy.org": "chris@pocketbuddy.org" },
+    accounts: { "pocketbuddy.org": "owner@example.org" },
   };
   for (const list of [config.routes.Geek, config.containers.Geek.domains]) {
     for (const entry of list) assert.equal(typeof entry, "string");
