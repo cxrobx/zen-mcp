@@ -481,11 +481,16 @@ function sameHostAndPort(pageUrl: string, target: { host: string; port: string }
 
 function feedbackLine(r: InteractionResult): string {
   const fb = r.feedback;
-  if (!fb) return "";
+  // The click still reached the element, so this is a note, not a failure - but it is the
+  // explanation for a click that appears to do nothing.
+  const covered = r.occludedBy
+    ? `\ncovered by ${truncateOneLine(r.occludedBy, 80)} - the element got the click, but a page in a modal state may ignore it; dismiss the overlay if nothing happened`
+    : "";
+  if (!fb) return covered;
   const active = fb.activeElement
     ? ` active=${fb.activeElement.tag}${fb.activeElement.name ? ` name="${truncateOneLine(fb.activeElement.name, 60)}"` : ""}`
     : "";
-  return `\npage: ${fb.title ? `"${truncateOneLine(fb.title, 80)}" ` : ""}${fb.url}${fb.navigated ? " navigated" : ""}${active}`;
+  return `\npage: ${fb.title ? `"${truncateOneLine(fb.title, 80)}" ` : ""}${fb.url}${fb.navigated ? " navigated" : ""}${active}${covered}`;
 }
 
 function okWithFeedback(text: string, r: InteractionResult): ToolResponse {
@@ -2041,7 +2046,10 @@ export function registerTools(
               // What the page looked like when it was decided on; the next settle waits to leave it.
               beforeClick = await pageFingerprint(daemon, target);
               const r = await daemon.call<InteractionResult>(Methods.DomClick, { tabId: target, uid });
-              return { navigated: r.feedback?.navigated === true };
+              return {
+                navigated: r.feedback?.navigated === true,
+                ...(r.occludedBy ? { occludedBy: r.occludedBy } : {}),
+              };
             },
             ask: (state, questions) => askJev(apiKey, state, questions),
             allowHost,

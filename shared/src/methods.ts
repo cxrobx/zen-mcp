@@ -279,6 +279,13 @@ export interface ActionFeedback {
 
 export interface InteractionResult extends TabIdResult {
   matchedTag?: string;
+  /**
+   * Set when something else was painted over the click point: a short description of it.
+   * The click still went to the intended element (events are dispatched on the element,
+   * not at coordinates), so this explains a click that "worked" and changed nothing -
+   * typically a consent or cookie modal holding the app in a modal state.
+   */
+  occludedBy?: string;
   feedback?: ActionFeedback;
 }
 

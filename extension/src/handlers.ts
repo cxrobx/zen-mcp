@@ -73,6 +73,29 @@ async function buildContainerLookup(): Promise<Map<string, string>> {
   return map;
 }
 
+/**
+ * A window a CONTAINER tab may legally be created in.
+ *
+ * `tabs.create` with no `windowId` inherits the last-focused window, and a non-private
+ * cookieStoreId is illegal in a private one - Firefox rejects the whole call with
+ * "Illegal to set non-private cookieStoreId in a private window". An extension without
+ * incognito access cannot see private windows at all, so it cannot even report which
+ * window is in the way; from here it just looks like every container tab-open is broken
+ * while the user has a private window focused.
+ *
+ * Every window this CAN see is therefore a legal home. Prefer the focused one so a tab
+ * still lands where the user is working whenever that window is an ordinary one.
+ */
+async function containerWindowId(): Promise<number | null> {
+  try {
+    const windows = await browser.windows.getAll({});
+    const usable = windows.filter((w) => w.incognito !== true && w.type === "normal" && typeof w.id === "number");
+    return (usable.find((w) => w.focused) ?? usable[0])?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function tabToPageInfo(
   tab: browser.tabs.Tab,
   names: Map<string, string>,
@@ -671,10 +694,47 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
     }
   };
 
-  const pointerClick = (el: Element): void => {
+  /**
+   * What is painted on top of this element's click point, if anything.
+   *
+   * This does NOT change where the click goes: pointerClick dispatches the events on the
+   * element itself, so a cookie banner cannot swallow them the way it would swallow a real
+   * mouse click at those coordinates. It is a diagnosis. A control under a modal usually
+   * still fires its handler and still does nothing the user can see, because the app is in
+   * a modal state - and "clicked, nothing happened" is the single most confusing thing a
+   * caller can be told. Naming the blocker turns that into an actionable message.
+   *
+   * elementFromPoint honours `pointer-events: none`, so decorative overlays never register.
+   * Shadow DOM is skipped: `contains` does not cross a shadow boundary, so a target inside
+   * one would always look covered by its own host.
+   */
+  const occludedBy = (el: Element, point: { x: number; y: number }): string | null => {
+    try {
+      if (el.getRootNode() !== document) return null;
+      const hit = document.elementFromPoint(point.x, point.y);
+      // No hit means the point is outside the viewport, which is not evidence of covering.
+      if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return null;
+      const described = hit as HTMLElement;
+      const name =
+        described.getAttribute("aria-label") ??
+        described.getAttribute("role") ??
+        (described.id ? `#${described.id}` : "") ??
+        "";
+      const text = (described.innerText ?? described.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+      const parts = [described.tagName.toLowerCase()];
+      if (name) parts.push(`"${name}"`);
+      if (text) parts.push(`text "${text}"`);
+      return parts.join(" ");
+    } catch {
+      return null;
+    }
+  };
+
+  const pointerClick = (el: Element): string | null => {
     scrollToElement(el);
     const target = el as HTMLElement;
     const point = center(el);
+    const covering = occludedBy(el, point);
     const pointerBase: PointerEventInit = {
       bubbles: true,
       cancelable: true,
@@ -727,6 +787,7 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
         button: 0,
       }),
     );
+    return covering;
   };
 
   const hoverElement = (el: Element): void => {
@@ -897,8 +958,8 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
 
   if (command.kind === "click") {
     const el = await findTarget();
-    pointerClick(el);
-    return { matchedTag: (el as HTMLElement).tagName };
+    const covering = pointerClick(el);
+    return { matchedTag: (el as HTMLElement).tagName, ...(covering ? { occludedBy: covering } : {}) };
   }
   if (command.kind === "hover") {
     const el = await findTarget();
@@ -1073,7 +1134,18 @@ export const handlers: Record<string, Handler> = {
     const params = raw as NewPageParams;
     const url = requireString(params?.url, "url");
     const createOpts: browser.tabs._CreateCreateProperties = { url, active: params.active ?? false };
-    if (params.cookieStoreId) createOpts.cookieStoreId = params.cookieStoreId;
+    if (params.cookieStoreId) {
+      createOpts.cookieStoreId = params.cookieStoreId;
+      // Pin the window explicitly rather than inherit focus, which may be on a private
+      // window where a container tab is illegal (see containerWindowId).
+      const windowId = await containerWindowId();
+      if (windowId === null) {
+        throw new Error(
+          "no ordinary window to open a container tab in - every window this extension can see is private or closed. Open a normal Zen window and retry.",
+        );
+      }
+      createOpts.windowId = windowId;
+    }
     const tab = await browser.tabs.create(createOpts);
     const names = await buildContainerLookup();
     const cookieStoreId = tab.cookieStoreId ?? params.cookieStoreId ?? "firefox-default";

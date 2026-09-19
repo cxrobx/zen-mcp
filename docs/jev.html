@@ -897,19 +897,35 @@ title anyway; don't rely on <code>navigated</code> alone. Since
 2026-09-19 the settle also owns what Jev is told about it (rule 9), so
 <code>navigated</code> now decides only how long to wait, never what
 happened.</li>
-<li><strong>No occlusion check before a click.</strong> A control under
-a cookie banner or consent modal is still offered and still clicked, and
-the click lands on the overlay. jev-ultrafast hit-tests with
-<code>elementFromPoint</code> and rejects covered targets; doing that
-here is an extension change plus an AMO re-sign. Nothing about it
-weakens the mutation guard or the eligibility filter — the risk is a
-wasted step, not a wrong action.</li>
-<li><strong>Big pages are capped, in DOM order.</strong> 2,026 controls
-on a Wikipedia article become 254 candidates, and the snapshot of such a
-page is ~1.3 s of a 3.4 s run. A visible-only, single-call snapshot
-(what jev-ultrafast does) is the next lever, and not worth its extension
-re-sign today: the measured ratio passes without it, and on console
-pages an observation is ~200 ms.</li>
+<li><strong>An overlay does not steal our clicks, so occlusion is
+reported, not rejected</strong> (extension 0.0.19).
+<code>pointerClick</code> dispatches its events <strong>on the
+element</strong>, not at coordinates, so unlike a CDP-driven real mouse
+click a cookie banner never swallows them — the control's handler runs.
+What still fails is the app: held in a modal state, it ignores the
+action, and the caller is told "clicked" while nothing happened. So the
+hit-test result is carried as <code>occludedBy</code> rather than used
+to refuse the click. <code>navigate_goal</code> stops on <em>covered
+<strong>and</strong> nothing moved</em> and names the overlay; plain
+<code>click</code>/<code>click_by_uid</code> behave exactly as before,
+with a note appended. Rejecting instead would have been the upstream
+behavior and the wrong port: it would break every legitimate click under
+a transparent layer for no gain, since the click was never going
+astray.</li>
+<li><strong>Big pages are capped at 254, now on-screen first</strong>
+(extension 0.0.19). The snapshot's own filter is style-based
+(<code>isRelevant</code> → <code>isVisible</code>:
+display/visibility/opacity, ancestors included), so all 2,026 controls
+on a Wikipedia article are "visible" and a cap taken in DOM order spent
+itself on nav chrome and the first paragraphs. Nodes now carry
+<code>computed.inViewport</code> and <code>collectInteractive</code>
+sorts on it, stably. <strong>Ordering, not filtering — the deliberate
+divergence from jev-ultrafast</strong>, which filters to the viewport
+because its model can <code>SCROLL_UP</code>/<code>SCROLL_DOWN</code>;
+this loop has no scroll, so dropping an off-screen control would make it
+permanently unreachable. What this does <em>not</em> fix is the ~1.3 s
+to build and ship a 2,026-node tree: that needs a controls-only RPC
+instead of the full snapshot, which is still unbuilt.</li>
 <li><strong>Pricing unchecked.</strong> Tokens are reported per run;
 cost per token isn't known yet.</li>
 <li><strong>Read-only by construction.</strong> No typing, selecting,
@@ -1050,10 +1066,9 @@ the budget does</td>
 <tr>
 <td>Reject a target covered by an overlay before clicking
 (<code>elementFromPoint</code> hit-test)</td>
-<td>No hit-test; a control under a consent modal is still offered</td>
-<td><strong>Open gap.</strong> Needs an extension change and an AMO
-re-sign, the same cost that deferred the visible-only snapshot. The
-mutation guard and eligibility filter are unaffected by it</td>
+<td>No hit-test at all</td>
+<td><strong>Taken 2026-09-19, as a diagnosis rather than a
+rejection</strong> — the difference is architectural, see below</td>
 </tr>
 <tr>
 <td><code>expanded</code> state in the candidate list</td>

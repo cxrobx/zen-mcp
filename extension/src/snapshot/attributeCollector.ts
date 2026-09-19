@@ -154,6 +154,23 @@ export function getComputedProperties(el: Element): ComputedProperties {
     computed.visible = false;
   }
 
+  // In the viewport right now. Only meaningful for something already style-visible, and
+  // only read for such elements so a hidden subtree never pays for a rect. The walker is
+  // read-only, so this rect read rides the layout getComputedStyle above already forced -
+  // no thrashing.
+  if (computed.visible) {
+    try {
+      const rect = el.getBoundingClientRect();
+      const height = window.innerHeight || document.documentElement.clientHeight || 0;
+      const width = window.innerWidth || document.documentElement.clientWidth || 0;
+      computed.inViewport =
+        rect.bottom > 0 && rect.right > 0 && rect.top < height && rect.left < width && rect.width > 0 && rect.height > 0;
+    } catch {
+      // Leave it undefined: unknown is not the same as off-screen, and consumers treat
+      // only an explicit false as "not on screen".
+    }
+  }
+
   // Accessible (not aria-hidden and visible)
   computed.accessible = computed.visible && !el.getAttribute('aria-hidden');
 

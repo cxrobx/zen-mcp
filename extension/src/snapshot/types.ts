@@ -27,6 +27,12 @@ export interface ComputedProperties {
   interactive?: boolean;
   visible?: boolean;
   accessible?: boolean;
+  /**
+   * Intersects the viewport right now. `visible` is style-only (display/visibility/opacity),
+   * so on a long article every control in the body is `visible: true` while only a handful
+   * are on screen - this is what tells those apart.
+   */
+  inViewport?: boolean;
 }
 
 export interface SnapshotNode {

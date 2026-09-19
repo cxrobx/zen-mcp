@@ -58,7 +58,12 @@ export interface GoalDeps {
    */
   settle(hint: SettleHint): Promise<{ settled: boolean; detail?: string; changed?: boolean }>;
   elements(pageUrl: string): Promise<InteractiveCollection>;
-  click(uid: string): Promise<{ navigated: boolean }>;
+  /**
+   * `occludedBy` describes whatever was painted over the control's click point. The click
+   * still reached the element, so this is not a failure - but a page held in a modal state
+   * usually ignores it, and that is the hand-back the caller cannot otherwise diagnose.
+   */
+  click(uid: string): Promise<{ navigated: boolean; occludedBy?: string }>;
   ask(state: unknown, questions: Record<string, JevQuestion>): Promise<JevResponse>;
   /** Throws when this host's data may not be sent. Re-checked every step: a click can leave the host. */
   allowHost(host: string | null): void;
@@ -225,6 +230,9 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
   const recentActions: RecentAction[] = [];
   let arrivedVia: { control: string; destination: string | null } | null = null;
   let settleHint: SettleHint = { after: "start" };
+  // What covered the last click, if anything. Only interesting once the page turns out not
+  // to have reacted - a covered click that worked needs no explaining.
+  let occludedBy: string | null = null;
   let clicks = 0;
   let lastPickKey = "";
   let finalUrl = "";
@@ -262,6 +270,15 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
       const host = normalized?.host ?? null;
       finalUrl = page.url;
       finalPath = normalized?.path ?? "/";
+      // A covered click that moved nothing is worth stopping on at once. The event did reach
+      // the control, so the page is not broken - it is holding a modal, and no further pick
+      // gets past that. Saying which overlay it is turns "nothing happened" into one action.
+      if (occludedBy && changed === false && lastAction?.page_changed === false) {
+        return finish(
+          "handback",
+          `${lastAction.control} was clicked but is covered by ${occludedBy}, and nothing on the page changed - dismiss that overlay, then retry`,
+        );
+      }
       try {
         deps.allowHost(host);
       } catch (err) {
@@ -437,7 +454,9 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
       try {
         const clicked = await deps.click(picked.uid);
         navigated = clicked.navigated;
+        occludedBy = clicked.occludedBy ?? null;
         step.action = navigated ? "clicked, navigated" : "clicked";
+        if (occludedBy) step.action += `, covered by ${occludedBy}`;
       } catch (err) {
         step.action = "click failed";
         return finish("handback", `clicking ${picked.uid} failed (${(err as Error).message}) - the page may have re-rendered`);

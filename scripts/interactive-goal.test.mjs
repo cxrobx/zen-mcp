@@ -141,6 +141,38 @@ test("the limit truncates in DOM order and reports the true total", () => {
   assert.equal(r.elements[0].label, "Link 0");
 });
 
+test("on-screen controls win the cap, keeping DOM order inside each group", () => {
+  // A long article: 300 links, only the last 10 on screen. A cap taken in DOM order would
+  // spend itself before reaching any of them.
+  const tree = n(
+    "body",
+    {},
+    Array.from({ length: 300 }, (_, i) =>
+      n("a", { text: `Link ${i}`, computed: { visible: true, inViewport: i >= 290 } }),
+    ),
+  );
+  const r = collectInteractive(tree, [], { limit: INTERACTIVE_MAX_LIMIT });
+  assert.equal(r.total, 300);
+  assert.equal(r.truncated, true);
+  // The ten on-screen links lead, in DOM order.
+  assert.deepEqual(
+    r.elements.slice(0, 10).map((e) => e.label),
+    Array.from({ length: 10 }, (_, i) => `Link ${290 + i}`),
+  );
+  // Off-screen links are ordered behind them, not dropped - this loop cannot scroll.
+  assert.equal(r.elements[10].label, "Link 0");
+  assert.equal(r.elements.length, 254);
+});
+
+test("without viewport data the order is plain DOM order, not a silent demotion", () => {
+  const tree = n("body", {}, Array.from({ length: 5 }, (_, i) => n("a", { text: `Link ${i}` })));
+  const r = collectInteractive(tree, []);
+  assert.deepEqual(
+    r.elements.map((e) => e.label),
+    ["Link 0", "Link 1", "Link 2", "Link 3", "Link 4"],
+  );
+});
+
 // --- runGoal -------------------------------------------------------------------------
 
 const HOST = "dashboard.example.com";
@@ -502,6 +534,47 @@ test("goal: a settle that cannot tell leaves page_changed as the click reported 
   assert.deepEqual(calls.ask[2].state.recent_actions, [
     { control: 'link "Webhooks"', destination: "/acct/webhooks", page_changed: true },
   ]);
+});
+
+test("goal: a covered click that changed nothing hands back naming the overlay", async () => {
+  const menu = home({ elements: [el("u2", "Webhooks", { href: "/acct/webhooks" })], go: {} });
+  const { deps, calls } = harness(
+    [menu],
+    [stepReply({ choice: "u2", probs: { u2: 0.95, none: 0.05 } }), guardReply(0.03)],
+  );
+  deps.click = async (uid) => {
+    calls.click.push(uid);
+    return { navigated: false, occludedBy: 'div "cookie-consent" text "We use cookies"' };
+  };
+  deps.settle = async (hint) => {
+    calls.settle.push(hint);
+    return hint.after === "click" ? { settled: true, changed: false } : { settled: true };
+  };
+  const r = await runGoal(deps, OPTS);
+  assert.equal(r.outcome, "handback");
+  assert.match(r.reason, /covered by div "cookie-consent"/);
+  assert.match(r.reason, /dismiss that overlay/);
+  // It stopped at once rather than spending the rest of the budget behind the modal.
+  assert.equal(calls.click.length, 1);
+  assert.match(r.steps[0].action, /covered by/);
+});
+
+test("goal: a covered click that DID change the page is not treated as blocked", async () => {
+  // An overlay can sit over a control and the click still work. Only "covered AND nothing
+  // moved" is evidence of a modal holding the page.
+  const { deps, calls } = harness(
+    [home(), webhooks],
+    [
+      stepReply({ choice: "u2", probs: { u1: 0.03, u2: 0.95, none: 0.02 } }),
+      guardReply(0.04),
+      stepReply({ done: 0.9, choice: "w1", probs: { w1: 0.6, none: 0.4 } }),
+    ],
+  );
+  const click = deps.click;
+  deps.click = async (uid) => ({ ...(await click(uid)), occludedBy: 'div "toast"' });
+  const r = await runGoal(deps, OPTS);
+  assert.equal(r.outcome, "done");
+  assert.equal(calls.click.length, 1);
 });
 
 test("goal: the page moving between observation and click hands back without clicking", async () => {

@@ -82,6 +82,12 @@ export interface InteractiveElement {
   frameId?: number;
   /** Another element on the page has the same kind and label; only context tells them apart. */
   duplicate: boolean;
+  /**
+   * Intersects the viewport as of the snapshot. Undefined when the snapshot could not say.
+   * Used to order the list before the cap, never to drop anything: this loop cannot scroll,
+   * so an off-screen control still has to be reachable.
+   */
+  onScreen?: boolean;
 }
 
 export interface InteractiveCollection {
@@ -257,6 +263,8 @@ export function collectInteractive(
         if (href.offHost) element.offHost = true;
       }
       if (node.aria?.selected === true) element.selected = true;
+      const onScreen = node.computed?.inViewport;
+      if (typeof onScreen === "boolean") element.onScreen = onScreen;
       const frameId = frames.get(node.uid);
       if (typeof frameId === "number" && frameId !== 0) element.frameId = frameId;
       found.push(element);
@@ -278,8 +286,16 @@ export function collectInteractive(
   }
 
   const text = tree ? clip(subtreeText(tree, TEXT_MAX, (n) => n.computed?.visible === false), TEXT_MAX) : "";
+  // What is on screen goes first, DOM order kept inside each group (Array.sort is stable).
+  // The snapshot's own filter is style-based, so on a long article every body link counts as
+  // visible and a cap taken in DOM order spends itself on nav chrome and the first few
+  // paragraphs before reaching anything the reader can see. Ordering, never dropping: this
+  // loop has no scroll, so an off-screen control must still be reachable when there is room.
+  // Elements the snapshot could not judge sort with the on-screen group rather than behind it,
+  // so an older extension keeps plain DOM order instead of being silently demoted.
+  const ordered = found.slice().sort((a, b) => Number(a.onScreen === false) - Number(b.onScreen === false));
   return {
-    elements: found.slice(0, Math.max(0, limit)),
+    elements: ordered.slice(0, Math.max(0, limit)),
     total: found.length,
     truncated: found.length > limit,
     headings,
