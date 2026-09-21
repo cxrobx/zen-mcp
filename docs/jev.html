@@ -430,6 +430,90 @@ body:not(:has(.lvl-radio:checked)) .eli14 { display: block; }
 }
 
 </style>
+<style id="cx-dark">
+/* ===========================================================================
+   DARK — the vault's own dark theme.
+   An artifact follows the reader's appearance the way an Obsidian note does.
+   Ground, ink, code ground, rules and the six heading hues are Onyx's MEASURED
+   snapshot of this vault in dark mode (markdown_themes, 2026-09-20); the accents
+   are the same AnuPpuccin/Catppuccin tokens as the light palette above, in their
+   Mocha variants. Every text pair clears WCAG AA (4.5:1) on the ground it
+   actually lands on — page, card, subtle fill and code ground each checked, not
+   just the page.
+   In Onyx this flips with the app theme AND with "Match vault appearance",
+   because the shell sets the window's NSAppearance from whichever is in force
+   and WebKit resolves prefers-color-scheme from it — in the reader frame too.
+   Nothing here is Onyx-specific: the same block is why the file is dark in
+   Chrome, in Zen, and for whoever you send it to. `screen and` keeps print on
+   the light palette, where ink on paper belongs.
+   =========================================================================== */
+@media screen and (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --ivory:    #1A1A1A;   /* page background — measured vault ground          */
+    --slate:    #C4C5B5;   /* primary ink     — measured vault ink             */
+    --code-bg:  #151515;   /* code blocks + inline code — measured             */
+    --hr:       #484848;   /* dividers (matches the light theme's separation)  */
+    --clay:     #FAB387;   /* accent          (ctp peach, Mocha)               */
+    --clay-700: #E89B6B;   /* accent hover                                     */
+    --oat:      #2E2E2E;   /* filled node / avatar / chip ground               */
+    --olive:    #A6E3A1;   /* additions / success (Mocha green)                */
+    --rust:     #F38BA8;   /* deletions / danger  (Mocha red)                  */
+    --warn:     #F9E2AF;   /* warning             (Mocha yellow)               */
+    --gray-100: #252525;   /* subtle fill                                      */
+    --gray-300: #333333;   /* borders + rules                                  */
+    --gray-500: #95968B;   /* muted text   — 5.8:1 page, 5.4 card, 5.1 fill    */
+    --gray-700: #AEAFA1;   /* secondary text — 7.8:1 page, 7.3 card            */
+    --white:    #202020;   /* card surface — a hair off the page, as in light  */
+    --shadow: 0 1px 2px rgba(0,0,0,.40), 0 12px 32px -16px rgba(0,0,0,.70);
+  }
+
+  /* headings — the vault's dark per-level hues, same order as the light set */
+  h1, .doc-header h1 { color: #F078A0; }
+  h2 { color: #E6C37D; }
+  h3 { color: #82EB82; }
+  h4 { color: #72E0D6; }
+  h5 { color: #9A8DF7; }
+  h6 { color: #C592DE; }
+
+  /* syntax — the same token roles, lifted onto the dark code ground */
+  .kw  { color: #F078A0; }   /* keyword    */
+  .str { color: #A6E3A1; }   /* string     */
+  .fn  { color: #E6C37D; }   /* function   */
+  .cl  { color: #F38BA8; }   /* class/type */
+  .num { color: #9A8DF7; }   /* number     */
+  .bi  { color: #72E0D6; }   /* builtin    */
+  .cm  { color: #8A8B80; }   /* comment    */
+  .diff-row.ctx .code { color: #8A8B80; }
+
+  /* --white is the card SURFACE, so it darkens with the page. The toggle knob is
+     the one place it stood for "a light disc" and needs the ink instead. */
+  .toggle .track::after { background: var(--slate); }
+  .ticket:hover { box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+
+  /* SVG diagrams are authored with the light palette's literal hexes as
+     presentation attributes, which any CSS rule outranks — so each maps back to
+     the token it was. Keep this list in step with the palette above; a new
+     diagram colour that isn't here stays light and will show up as a bright
+     patch. Roles (verified across the corpus): #FDF6E3 node rects, #000000 and
+     #666666 label text, #CB4B16 connector lines, #ADB8B8 rules, #E0D7B8/#EEE8D5
+     filled nodes, #073642 dark label text, #586E75 arrowheads + fine print. */
+  [fill="#FDF6E3"]   { fill: var(--white); }      [stroke="#FDF6E3"]   { stroke: var(--white); }
+  [fill="#000000"]   { fill: var(--slate); }      [stroke="#000000"]   { stroke: var(--slate); }
+  [fill="#073642"]   { fill: var(--slate); }      [stroke="#073642"]   { stroke: var(--slate); }
+  [fill="#333333"]   { fill: var(--gray-700); }   [stroke="#333333"]   { stroke: var(--gray-700); }
+  [fill="#666666"]   { fill: var(--gray-500); }   [stroke="#666666"]   { stroke: var(--gray-500); }
+  [fill="#586E75"]   { fill: var(--gray-500); }   [stroke="#586E75"]   { stroke: var(--gray-500); }
+  [fill="#ADB8B8"]   { fill: var(--hr); }         [stroke="#ADB8B8"]   { stroke: var(--hr); }
+  [fill="#E0D7B8"]   { fill: var(--oat); }        [stroke="#E0D7B8"]   { stroke: var(--oat); }
+  [fill="#EDE8D6"]   { fill: var(--gray-100); }   [stroke="#EDE8D6"]   { stroke: var(--gray-100); }
+  [fill="#EEE8D5"]   { fill: var(--gray-100); }   [stroke="#EEE8D5"]   { stroke: var(--gray-100); }
+  [fill="#CB4B16"]   { fill: var(--clay); }       [stroke="#CB4B16"]   { stroke: var(--clay); }
+  [fill="#DC322F"]   { fill: var(--rust); }       [stroke="#DC322F"]   { stroke: var(--rust); }
+  [fill="#859900"]   { fill: var(--olive); }      [stroke="#859900"]   { stroke: var(--olive); }
+  [fill="#B58900"]   { fill: var(--warn); }       [stroke="#B58900"]   { stroke: var(--warn); }
+}
+</style>
 </head>
 <body>
 <!-- Explanation-level radios. They live at <body> root because the CSS reaches the
