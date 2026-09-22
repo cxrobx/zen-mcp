@@ -33,6 +33,22 @@ What the MV3 sandbox puts out of reach, and what to use instead:
 
 A Marionette mode was considered and deliberately rejected: it would still need the launch flag (so it would be dark by default), and the privileged tools additionally need `--remote-allow-system-access`, which exposes **unauthenticated** chrome-privileged execution to anything that can open a socket to `127.0.0.1:2828`.
 
+### Input is synthetic, and pages can tell
+
+Every click, hover and key press is built in JavaScript and fired with `dispatchEvent`, so the page sees `isTrusted: false`. Firefox gives WebExtensions no way to produce trusted input. Most sites never check, and in-page buttons, links, forms and app controls work normally. What does not happen is anything the browser reserves for a real user action, or anything that belongs to the browser rather than the page:
+
+| Doesn't happen | Do this instead |
+|---|---|
+| A click that opens a new tab or window (`target="_blank"`, `window.open`) — the popup blocker stops it, and Firefox's "prevented a pop-up" bar is outside what `screenshot_page` captures | Read the link's `href` from `interactive_elements` (`-> <url>`) and `open_url` it. A button that builds its URL in script has no workaround |
+| Clipboard writes, fullscreen, file pickers, audible autoplay | Not reachable. File uploads: Playwright, where the session isn't needed |
+| CSS `:hover` — `hover` fires mouse events but never puts the element in the hover state | Works only on menus that open from JavaScript listeners |
+| The browser's own handling of a key: `press_key` doesn't type text, move focus on `Tab`, submit a form on `Enter`, or reach browser shortcuts like `Cmd+L` | `fill`/`type` for text, `click` the submit button, `open_url`/`navigate_page` for navigation |
+| Sites that check `isTrusted` and ignore synthetic events (some anti-bot checks, a few components) | Hand the click back to the user |
+
+One of these is a known flaw in our own code, not a browser limit: `click` focuses the target unconditionally, even when the page cancels the press, which a real browser would not do. A menu that cancels the press to keep focus off its button (Radix-style) and closes on focus-out can open and immediately close. If a menu won't stay open, suspect that before `isTrusted`.
+
+Real trusted input would need either browser remote control (rejected above) or chrome-privileged code loaded into Zen — out of scope today. So far the limit has come up once (a button in an embedded admin app that opened its page in a new tab), and handing that click to the user covered it.
+
 ## Tool surface
 
 Per-tab tools take `tabId` (durable) or `pageIdx` (positional) — see [Addressing tabs](#addressing-tabs-tabid-vs-pageidx) below before using `pageIdx`.

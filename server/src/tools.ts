@@ -1371,7 +1371,8 @@ export function registerTools(
     "click_by_uid",
     {
       title: "Click by UID",
-      description: "Click the element with the given UID from the most recent snapshot of the page.",
+      description:
+        "Click the element with the given UID from the most recent snapshot of the page. The click is synthetic (isTrusted: false): one that opens a new tab or window is stopped by the popup blocker, so open_url the link's href instead.",
       inputSchema: {
         ...targetShape(),
         uid: z.string().describe("UID from take_snapshot"),
@@ -1395,7 +1396,7 @@ export function registerTools(
     "hover_by_uid",
     {
       title: "Hover by UID",
-      description: "Dispatch mouseover + mouseenter on the element at UID.",
+      description: "Dispatch mouseover + mouseenter on the element at UID. Synthetic, so it does not put the element in the CSS :hover state; only menus opened by JS listeners respond.",
       inputSchema: {
         ...targetShape(),
         uid: z.string(),
@@ -2089,7 +2090,7 @@ export function registerTools(
     {
       title: "Click by locator",
       description:
-        'Click the first element matching the locator. Locator grammar: prefixes css:/xpath:/text:/text*:/role: (default is css). Example: "text:Submit" or "role:button[name=\\"Submit\\"]".',
+        'Click the first element matching the locator. Locator grammar: prefixes css:/xpath:/text:/text*:/role: (default is css). Example: "text:Submit" or "role:button[name=\\"Submit\\"]". The click is synthetic (isTrusted: false): one that opens a new tab or window is stopped by the popup blocker, so open_url the link\'s href instead.',
       inputSchema: {
         ...targetShape(),
         selector: z.string(),
@@ -2116,7 +2117,7 @@ export function registerTools(
     "hover",
     {
       title: "Hover by locator",
-      description: "Dispatch mouseover/mouseenter on the first element matching the locator.",
+      description: "Dispatch mouseover/mouseenter on the first element matching the locator. Synthetic, so it does not put the element in the CSS :hover state; only menus opened by JS listeners respond.",
       inputSchema: {
         ...targetShape(),
         selector: z.string(),
@@ -2339,7 +2340,7 @@ export function registerTools(
     {
       title: "Press a key combo",
       description:
-        'Send a key combo (e.g. "Enter", "Cmd+L", "Ctrl+Shift+P", "Escape"). Without selector, sends to the active element.',
+        'Send a key combo (e.g. "Escape", "Enter", "Ctrl+Shift+P") to the page\'s key listeners. Without selector, sends to the active element. The events are synthetic (isTrusted: false), so the browser\'s own handling never runs: no text is typed (use fill/type), Tab does not move focus, Enter does not submit a form (click the submit button), and browser shortcuts like Cmd+L do nothing.',
       inputSchema: {
         ...targetShape(),
         keys: z.string(),
