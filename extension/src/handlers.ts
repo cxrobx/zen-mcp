@@ -375,7 +375,9 @@ async function executeInMain<T>(
           typeof opts.frameId === "number"
             ? { tabId, frameIds: [opts.frameId] }
             : { tabId },
-        func,
+        // The typings declare `func` as returning void; the real API hands its return value
+        // (awaited, if a promise) back as InjectionResult.result, which is what we read below.
+        func: func as (...args: unknown[]) => void,
         args,
         world: "MAIN" as browser.scripting.ExecutionWorld,
       }),
@@ -400,7 +402,7 @@ async function executeInAllFrames<T>(
     return await withTimeout(
       browser.scripting.executeScript({
         target: { tabId, allFrames: true },
-        func,
+        func: func as (...args: unknown[]) => void,
         args,
         world: "MAIN" as browser.scripting.ExecutionWorld,
       }),
@@ -465,7 +467,7 @@ async function collectFeedback(
   } catch {
     // ignore
   }
-  let activeElement: InteractionResult["feedback"]["activeElement"] | undefined;
+  let activeElement: NonNullable<InteractionResult["feedback"]>["activeElement"] | undefined;
   try {
     activeElement = await executeInMain(tabId, () => {
       const el = document.activeElement as HTMLElement | null;
@@ -718,8 +720,7 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
       const name =
         described.getAttribute("aria-label") ??
         described.getAttribute("role") ??
-        (described.id ? `#${described.id}` : "") ??
-        "";
+        (described.id ? `#${described.id}` : "");
       const text = (described.innerText ?? described.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
       const parts = [described.tagName.toLowerCase()];
       if (name) parts.push(`"${name}"`);
@@ -1586,11 +1587,13 @@ export const handlers: Record<string, Handler> = {
       throw new Error('by must be "value", "label", or "index"');
     }
     const beforeTab = await browser.tabs.get(tabId);
-    const result = await executeInMain<SelectOptionResult>(
+    // runInteractionCommand is one dispatcher for every command, typed as a plain record; its
+    // "select" branch is what builds this shape.
+    const result = (await executeInMain(
       tabId,
       runInteractionCommand,
       [{ kind: "select", locator, by: params.by, value: params.value, timeoutMs }],
-    );
+    )) as unknown as SelectOptionResult;
     return {
       ...result,
       feedback: await collectFeedback(tabId, {
@@ -1645,7 +1648,7 @@ export const handlers: Record<string, Handler> = {
 
   [Methods.CookiesGet]: async (raw): Promise<GetCookiesResult> => {
     const params = (raw as GetCookiesParams) ?? {};
-    const details: browser.cookies._GetAllDetailsType = {};
+    const details: browser.cookies._GetAllDetails = {};
     if (params.url) details.url = params.url;
     if (params.name) details.name = params.name;
     if (params.domain) details.domain = params.domain;
@@ -1665,7 +1668,7 @@ export const handlers: Record<string, Handler> = {
       if (!c.url || !c.name || typeof c.value !== "string") {
         throw new Error("each cookie requires url, name, value");
       }
-      const opts: browser.cookies._SetDetailsType = {
+      const opts: browser.cookies._SetDetails = {
         url: c.url,
         name: c.name,
         value: c.value,
@@ -1706,7 +1709,7 @@ export const handlers: Record<string, Handler> = {
         "clear_cookies requires at least one of: url, name, domain, storeId. Refusing to wipe all cookies.",
       );
     }
-    const details: browser.cookies._GetAllDetailsType = {};
+    const details: browser.cookies._GetAllDetails = {};
     if (params.url) details.url = params.url;
     if (params.name) details.name = params.name;
     if (params.domain) details.domain = params.domain;
@@ -1717,7 +1720,7 @@ export const handlers: Record<string, Handler> = {
     for (const c of list) {
       const domain = c.domain.replace(/^\./, "");
       const path = c.path || "/";
-      const removeOpts: browser.cookies._RemoveDetailsType = {
+      const removeOpts: browser.cookies._RemoveDetails = {
         url: details.url ?? `http${c.secure ? "s" : ""}://${domain}${path}`,
         name: c.name,
       };
