@@ -101,7 +101,7 @@ For installation specifically: `open -a "/Applications/Zen.app" <xpi>` triggers 
 | `scripts/probe.mjs` | `list_containers` against real Zen. |
 | `scripts/probe-pages.mjs` | M2: new_page, navigate, select, set_default_container, close. Creates + cleans up. |
 | `scripts/probe-dom.mjs` | M3 read-side: snapshot, evaluate_script, resolve_uid, screenshot. Targets example.com. |
-| `scripts/probe-interact.mjs` | M3 write-side: click, hover, fill, fill_form, rich editor input, pointer sequence, auto-scroll, auto-wait against a self-served localhost fixture. |
+| `scripts/probe-interact.mjs` | M3 write-side: click, hover, fill, fill_form, rich editor input, pointer sequence, auto-scroll, auto-wait against a self-served localhost fixture. Also pins cancelled-press handling (a Radix-style menu that must stay open, a `mousedown`-cancelling button that must not take focus, a plain click that must) and the `_blank` new-tab note (named for a real link, absent for a router-cancelled or same-tab one), and records whether the popup blocker stopped the tab. Closes every tab it opened on the fixture port, pass or fail. |
 | `scripts/probe-info.mjs` | get_firefox_info with and without `--container` scope. |
 | `scripts/probe-tabid.mjs` | Durable tab addressing against live Zen: `tabId` round-trip, absent-tabId error, stale `expectTabSet`, mutual exclusion. Creates + closes its own tab. |
 | `scripts/probe-hidden.mjs` | Tabs in NON-ACTIVE Zen workspaces against live Zen (T164): `list_pages includeHidden` enumerates them, `get_page_text` reads one in place by `tabId`, `open_url reuse=exact` lands on it instead of opening a tab, and the visible set + active tab are untouched afterwards. Read-only, never switches your workspace. Needs extension ≥ 0.0.18. |

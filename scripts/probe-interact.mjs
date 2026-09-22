@@ -227,6 +227,9 @@ function findUidForTagId(snapshot, tag, idHint) {
   return null;
 }
 
+/** Set once the fixture tab exists; closes every tab on the fixture port. */
+let closeFixtureTabs = null;
+
 async function main() {
   const server = createServer((req, res) => {
     res.setHeader("content-type", "text/html; charset=utf-8");
@@ -255,6 +258,18 @@ async function main() {
     clientInfo: { name: "probe-interact", version: "0.0.1" },
   });
   mcp.notify("notifications/initialized");
+
+  // From here on a tab exists in the user's real browser, so a failure must still close it:
+  // a failed run used to leave its fixture tab open and in front. Closing by port catches the
+  // fixture tab and any tab its _blank link managed to open; includeHidden in case the user
+  // switched workspace mid-run.
+  closeFixtureTabs = async () => {
+    const pages = await mcp.callTool("list_pages", { includeHidden: true });
+    for (const l of pages.split("\n").filter((l) => l.includes(`127.0.0.1:${port}/`))) {
+      const tabId = Number.parseInt(l.match(/tabId=(\d+)/)?.[1] ?? "", 10);
+      if (Number.isFinite(tabId)) await mcp.callTool("close_page", { tabId }).catch(() => {});
+    }
+  };
 
   await step(`new_page -> ${fixtureUrl}`, async () => {
     console.log(await mcp.callTool("new_page", { url: fixtureUrl }));
@@ -494,7 +509,7 @@ async function main() {
     if (text.includes("opens in a new tab")) throw new Error(`unexpected new-tab note for ${selector}`);
   }
 
-  await mcp.callTool("close_page", { pageIdx: idx });
+  await closeFixtureTabs();
 
   console.log("\n[probe-interact] PASS");
   mcpProc.kill("SIGTERM");
@@ -503,7 +518,8 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("[probe-interact] FAIL:", err.message);
+  if (closeFixtureTabs) await closeFixtureTabs().catch(() => {});
   process.exit(1);
 });
