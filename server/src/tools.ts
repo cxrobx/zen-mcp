@@ -42,6 +42,7 @@ import {
   resolveContainerByName,
 } from "./container.js";
 import { ZenToolError } from "./errors.js";
+import { type FeedbackOptions, feedbackLine, truncateOneLine } from "./feedback.js";
 import { continueCursor, withResponseBudget } from "./response-budget.js";
 import { parseLocator } from "./locator.js";
 import {
@@ -124,13 +125,6 @@ function fail(err: unknown): ToolResponse {
 
 function toLocator(spec: string): LocatorSpec {
   return parseLocator(spec) as LocatorSpec;
-}
-
-function truncateOneLine(value: string | undefined, maxLen: number): string {
-  if (!value) return "";
-  const oneLine = value.replace(/\s+/g, " ").trim();
-  if (oneLine.length <= maxLen) return oneLine;
-  return oneLine.slice(0, maxLen - 3) + "...";
 }
 
 // Zen Workspaces scope browser.tabs.query({}) to the ACTIVE workspace: tabs in other
@@ -489,26 +483,8 @@ function snapshotErrorText(message: string): string {
   return `the in-page snapshot walk threw and produced nothing: ${message}. This is a bug in the snapshot code, not an empty page - report it rather than concluding the page has no controls.`;
 }
 
-function feedbackLine(r: InteractionResult): string {
-  const fb = r.feedback;
-  // The click still reached the element, so this is a note, not a failure - but it is the
-  // explanation for a click that appears to do nothing.
-  const covered = r.occludedBy
-    ? `\ncovered by ${truncateOneLine(r.occludedBy, 80)} - the element got the click, but a page in a modal state may ignore it; dismiss the overlay if nothing happened`
-    : "";
-  // Not truncated: a cut URL is useless, and the caller's next step is to open this one.
-  const newTab = r.opensNewTab
-    ? `\nopens in a new tab: ${r.opensNewTab} - a synthetic click is usually stopped by the popup blocker, so if list_pages shows no new tab, open_url that address`
-    : "";
-  if (!fb) return `${covered}${newTab}`;
-  const active = fb.activeElement
-    ? ` active=${fb.activeElement.tag}${fb.activeElement.name ? ` name="${truncateOneLine(fb.activeElement.name, 60)}"` : ""}`
-    : "";
-  return `\npage: ${fb.title ? `"${truncateOneLine(fb.title, 80)}" ` : ""}${fb.url}${fb.navigated ? " navigated" : ""}${active}${covered}${newTab}`;
-}
-
-function okWithFeedback(text: string, r: InteractionResult): ToolResponse {
-  return withNavMeta(ok(`${text}${feedbackLine(r)}`), {
+function okWithFeedback(text: string, r: InteractionResult, opts?: FeedbackOptions): ToolResponse {
+  return withNavMeta(ok(`${text}${feedbackLine(r, opts)}`), {
     ...(r.feedback?.url ? { url: r.feedback.url } : {}),
     ...(r.feedback?.navigated ? { navigated: true } : {}),
   });
@@ -1389,7 +1365,7 @@ export function registerTools(
           tabId: page.tabId,
           uid,
         });
-        return okWithFeedback(`clicked uid=${uid} on tabId=${page.tabId}`, r);
+        return okWithFeedback(`clicked uid=${uid} on tabId=${page.tabId}`, r, { click: true });
       } catch (err) {
         return fail(err);
       }
@@ -2110,7 +2086,7 @@ export function registerTools(
           locator,
           ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
         });
-        return okWithFeedback(`clicked ${selector}`, r);
+        return okWithFeedback(`clicked ${selector}`, r, { click: true });
       } catch (err) {
         return fail(err);
       }
