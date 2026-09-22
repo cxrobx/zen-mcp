@@ -51,6 +51,17 @@ const FIXTURE_HTML = `<!doctype html>
     <div id="hover-target">hover me</div>
   </div>
 
+  <div class="box">
+    <h2>Press handling</h2>
+    <button id="menu-trigger" type="button">Menu</button>
+    <div id="menu" hidden>menu open</div>
+    <div id="menu-events">none</div>
+    <button id="nofocus-btn" type="button">No focus</button>
+    <a id="newtab-link" href="/newtab-target" target="_blank"><span id="newtab-span">New tab link</span></a>
+    <a id="routed-link" href="/routed-target" target="_blank">Routed link</a>
+    <a id="sametab-link" href="#same">Same tab link</a>
+  </div>
+
   <div class="spacer"></div>
   <button id="below-fold" type="button">Below fold</button>
   <div id="below-result">initial</div>
@@ -107,6 +118,32 @@ const FIXTURE_HTML = `<!doctype html>
     document.getElementById('deep-btn').addEventListener('click', () => {
       document.getElementById('deep-result').textContent = 'deep clicked';
     });
+    // Modelled on a menu trigger (Radix and friends): cancel the press so the trigger keeps
+    // focus off itself, open the menu, and treat focus landing on the trigger as focus
+    // leaving the menu - which dismisses it. A click that forces focus opens and closes it.
+    const trigger = document.getElementById('menu-trigger');
+    const menu = document.getElementById('menu');
+    const seen = [];
+    for (const type of ['pointerdown', 'mousedown', 'focus', 'pointerup', 'mouseup', 'click']) {
+      trigger.addEventListener(type, () => {
+        seen.push(type);
+        document.getElementById('menu-events').textContent = seen.join(',');
+      });
+    }
+    trigger.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      menu.hidden = false;
+    });
+    trigger.addEventListener('focus', () => {
+      menu.hidden = true;
+    });
+    const noFocus = document.getElementById('nofocus-btn');
+    noFocus.addEventListener('mousedown', (event) => event.preventDefault());
+    noFocus.addEventListener('click', () => {
+      noFocus.dataset.clicked = 'yes';
+    });
+    // A client-side router handles the click itself, so no tab opens.
+    document.getElementById('routed-link').addEventListener('click', (event) => event.preventDefault());
   </script>
 </body>
 </html>`;
@@ -291,6 +328,13 @@ async function main() {
   });
   console.log(`> click-result -> "${clickResult}"`);
   if (clickResult !== "clicked") throw new Error(`expected "clicked", got "${clickResult}"`);
+  // An uncancelled press still focuses the target.
+  const clickFocus = await mcp.callTool("evaluate_script", {
+    pageIdx: idx,
+    code: "return document.activeElement ? document.activeElement.id : null;",
+  });
+  console.log(`> focused after plain click -> ${clickFocus}`);
+  if (clickFocus !== "click-btn") throw new Error(`expected click-btn focused, got ${clickFocus}`);
 
   await step(`hover_by_uid hover=${hoverUid}`, async () => {
     console.log(await mcp.callTool("hover_by_uid", { pageIdx: idx, uid: hoverUid }));
@@ -393,6 +437,62 @@ async function main() {
   });
   console.log(`> deep result -> ${deepState}`);
   if (deepState !== "deep clicked") throw new Error(`deep locator click failed: ${deepState}`);
+
+  await step("cancelled pointerdown: no mouse events, no focus, menu stays open", async () => {
+    console.log(await mcp.callTool("click", { pageIdx: idx, selector: "#menu-trigger" }));
+  });
+  const menuState = await mcp.callTool("evaluate_script", {
+    pageIdx: idx,
+    code: "return {open: !document.getElementById('menu').hidden, events: document.getElementById('menu-events').textContent, focused: document.activeElement ? document.activeElement.id : null};",
+  });
+  console.log(`> menu state -> ${menuState}`);
+  const menu = JSON.parse(menuState);
+  if (menu.events !== "pointerdown,pointerup,click") {
+    throw new Error(`expected pointerdown,pointerup,click only, got ${menu.events}`);
+  }
+  if (!menu.open) throw new Error(`menu closed after a cancelled press: ${menuState}`);
+  if (menu.focused === "menu-trigger") throw new Error(`trigger took focus: ${menuState}`);
+
+  await step("cancelled mousedown: click lands, focus does not move", async () => {
+    console.log(await mcp.callTool("click", { pageIdx: idx, selector: "#nofocus-btn" }));
+  });
+  const noFocusState = await mcp.callTool("evaluate_script", {
+    pageIdx: idx,
+    code: "var b=document.getElementById('nofocus-btn'); return {clicked: b.dataset.clicked || null, focused: document.activeElement === b};",
+  });
+  console.log(`> no-focus state -> ${noFocusState}`);
+  const noFocus = JSON.parse(noFocusState);
+  if (noFocus.clicked !== "yes") throw new Error(`click did not land: ${noFocusState}`);
+  if (noFocus.focused) throw new Error(`button focused despite a cancelled mousedown: ${noFocusState}`);
+
+  const newTabText = await step("_blank link (clicked on a child span) names its URL", () =>
+    mcp.callTool("click", { pageIdx: idx, selector: "#newtab-span" }),
+  );
+  console.log(newTabText);
+  const expectedUrl = `http://127.0.0.1:${port}/newtab-target`;
+  if (!newTabText.includes(`opens in a new tab: ${expectedUrl}`)) {
+    throw new Error(`expected a new-tab note naming ${expectedUrl}`);
+  }
+  await sleep(800);
+  // Not asserted: whether the popup blocker stopped it depends on this profile's settings.
+  // Recorded, because "usually stopped" is the claim the note makes. Any tab it did open is closed.
+  const opened = (await mcp.callTool("list_pages"))
+    .split("\n")
+    .filter((l) => l.includes(`127.0.0.1:${port}/newtab-target`));
+  console.log(`> popup blocker ${opened.length ? "LET IT THROUGH" : "stopped it"}`);
+  for (const l of opened) {
+    const openedId = Number.parseInt(l.match(/tabId[=:]\s*(\d+)/)?.[1] ?? "", 10);
+    if (Number.isFinite(openedId)) await mcp.callTool("close_page", { tabId: openedId });
+  }
+
+  for (const [selector, why] of [
+    ["#routed-link", "a router cancelled the click"],
+    ["#sametab-link", "no target"],
+  ]) {
+    const text = await step(`no new-tab note: ${why}`, () => mcp.callTool("click", { pageIdx: idx, selector }));
+    console.log(text);
+    if (text.includes("opens in a new tab")) throw new Error(`unexpected new-tab note for ${selector}`);
+  }
 
   await mcp.callTool("close_page", { pageIdx: idx });
 

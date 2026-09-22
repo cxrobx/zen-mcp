@@ -730,7 +730,26 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
     }
   };
 
-  const pointerClick = (el: Element): string | null => {
+  /**
+   * The absolute URL a click on this element would open in a NEW tab, or null.
+   *
+   * A synthetic click carries no user activation, so the popup blocker stops a `_blank`
+   * link and the caller is told "clicked" while nothing visible happened. Naming the URL
+   * lets them open it with open_url instead. Only `_blank` counts: a named target may be an
+   * existing frame, which is a same-tab navigation. `<base target>` applies when the link
+   * has no target of its own. A download link, or a non-http(s) href, opens no tab.
+   */
+  const newTabHref = (el: Element): string | null => {
+    const link = el.closest("a[href], area[href]") as HTMLAnchorElement | HTMLAreaElement | null;
+    if (!link || link.hasAttribute("download")) return null;
+    const targetName = link.hasAttribute("target")
+      ? link.getAttribute("target")
+      : document.querySelector("base[target]")?.getAttribute("target");
+    if ((targetName ?? "").trim().toLowerCase() !== "_blank") return null;
+    return link.protocol === "http:" || link.protocol === "https:" ? link.href : null;
+  };
+
+  const pointerClick = (el: Element): { covering: string | null; opensNewTab: string | null } => {
     scrollToElement(el);
     const target = el as HTMLElement;
     const point = center(el);
@@ -745,20 +764,30 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
       pointerType: "mouse",
       isPrimary: true,
     };
+    // Honour the page cancelling the press, as a browser does. A cancelled pointerdown
+    // suppresses the compatibility mousedown/mouseup (Pointer Events spec), and a cancelled
+    // press - either event - leaves focus where it was. Menu triggers cancel pointerdown
+    // precisely so the trigger doesn't take focus from the menu they open, and close the
+    // menu on focus-out, so forcing focus here opened and immediately closed them.
+    // `click` still fires either way, as it does in a browser.
+    let pressAllowed = true;
     if (typeof PointerEvent === "function") {
-      target.dispatchEvent(new PointerEvent("pointerdown", { ...pointerBase, buttons: 1 }));
+      pressAllowed = target.dispatchEvent(new PointerEvent("pointerdown", { ...pointerBase, buttons: 1 }));
     }
-    target.dispatchEvent(
-      new MouseEvent("mousedown", {
-        bubbles: true,
-        cancelable: true,
-        clientX: point.x,
-        clientY: point.y,
-        button: 0,
-        buttons: 1,
-      }),
-    );
-    if (typeof target.focus === "function") {
+    let focusAllowed = pressAllowed;
+    if (pressAllowed) {
+      focusAllowed = target.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          clientX: point.x,
+          clientY: point.y,
+          button: 0,
+          buttons: 1,
+        }),
+      );
+    }
+    if (focusAllowed && typeof target.focus === "function") {
       try {
         target.focus({ preventScroll: true });
       } catch {
@@ -768,17 +797,19 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
     if (typeof PointerEvent === "function") {
       target.dispatchEvent(new PointerEvent("pointerup", { ...pointerBase, buttons: 0 }));
     }
-    target.dispatchEvent(
-      new MouseEvent("mouseup", {
-        bubbles: true,
-        cancelable: true,
-        clientX: point.x,
-        clientY: point.y,
-        button: 0,
-        buttons: 0,
-      }),
-    );
-    target.dispatchEvent(
+    if (pressAllowed) {
+      target.dispatchEvent(
+        new MouseEvent("mouseup", {
+          bubbles: true,
+          cancelable: true,
+          clientX: point.x,
+          clientY: point.y,
+          button: 0,
+          buttons: 0,
+        }),
+      );
+    }
+    const clickAllowed = target.dispatchEvent(
       new MouseEvent("click", {
         bubbles: true,
         cancelable: true,
@@ -787,7 +818,8 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
         button: 0,
       }),
     );
-    return covering;
+    // A page that cancels the click (a client-side router) opens no tab itself.
+    return { covering, opensNewTab: clickAllowed ? newTabHref(el) : null };
   };
 
   const hoverElement = (el: Element): void => {
@@ -958,8 +990,12 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
 
   if (command.kind === "click") {
     const el = await findTarget();
-    const covering = pointerClick(el);
-    return { matchedTag: (el as HTMLElement).tagName, ...(covering ? { occludedBy: covering } : {}) };
+    const { covering, opensNewTab } = pointerClick(el);
+    return {
+      matchedTag: (el as HTMLElement).tagName,
+      ...(covering ? { occludedBy: covering } : {}),
+      ...(opensNewTab ? { opensNewTab } : {}),
+    };
   }
   if (command.kind === "hover") {
     const el = await findTarget();

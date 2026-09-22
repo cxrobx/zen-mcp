@@ -291,6 +291,12 @@ export interface InteractionResult extends TabIdResult {
    * typically a consent or cookie modal holding the app in a modal state.
    */
   occludedBy?: string;
+  /**
+   * Set when the clicked element is (inside) a `target="_blank"` http(s) link whose click the
+   * page did not cancel: the absolute URL it opens. A synthetic click carries no user
+   * activation, so the popup blocker usually stops the new tab; open_url this URL instead.
+   */
+  opensNewTab?: string;
   feedback?: ActionFeedback;
 }
 

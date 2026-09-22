@@ -496,11 +496,15 @@ function feedbackLine(r: InteractionResult): string {
   const covered = r.occludedBy
     ? `\ncovered by ${truncateOneLine(r.occludedBy, 80)} - the element got the click, but a page in a modal state may ignore it; dismiss the overlay if nothing happened`
     : "";
-  if (!fb) return covered;
+  // Not truncated: a cut URL is useless, and the caller's next step is to open this one.
+  const newTab = r.opensNewTab
+    ? `\nopens in a new tab: ${r.opensNewTab} - a synthetic click is usually stopped by the popup blocker, so if list_pages shows no new tab, open_url that address`
+    : "";
+  if (!fb) return `${covered}${newTab}`;
   const active = fb.activeElement
     ? ` active=${fb.activeElement.tag}${fb.activeElement.name ? ` name="${truncateOneLine(fb.activeElement.name, 60)}"` : ""}`
     : "";
-  return `\npage: ${fb.title ? `"${truncateOneLine(fb.title, 80)}" ` : ""}${fb.url}${fb.navigated ? " navigated" : ""}${active}${covered}`;
+  return `\npage: ${fb.title ? `"${truncateOneLine(fb.title, 80)}" ` : ""}${fb.url}${fb.navigated ? " navigated" : ""}${active}${covered}${newTab}`;
 }
 
 function okWithFeedback(text: string, r: InteractionResult): ToolResponse {
