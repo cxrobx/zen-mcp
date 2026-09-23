@@ -2,6 +2,10 @@
 
 WebExtension-backed MCP for Zen / Firefox. It lives as a permanently-installed signed extension in your daily browser — **no launch flags, no restarts**, container scoping per MCP entry.
 
+![Claude checks a billing dashboard through zen-mcp in an already-signed-in browser tab (illustrative UI, fake data)](docs/media/zen-mcp-demo.gif)
+
+<sub>Illustrative UI with fake data: a generic browser and a fictional dashboard.</sub>
+
 That is the whole design premise. Marionette/WebDriver-based browser MCPs (including [`firefox-devtools-mcp`](https://github.com/mozilla/firefox-devtools-mcp), which this project once had a sibling fork of) reach further into the browser, but they require launching it with `--marionette`, so they can't drive the browser you already have open with all your sessions in it. This one trades that reach for actually being usable every day.
 
 ```
