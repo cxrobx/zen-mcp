@@ -6,7 +6,11 @@ WebExtension-backed MCP for Zen / Firefox. It lives as a permanently-installed s
 
 <sub>Illustrative UI with fake data: a generic browser and a fictional dashboard.</sub>
 
-That is the whole design premise. Marionette/WebDriver-based browser MCPs (including [`firefox-devtools-mcp`](https://github.com/mozilla/firefox-devtools-mcp), which this project once had a sibling fork of) reach further into the browser, but they require launching it with `--marionette`, so they can't drive the browser you already have open with all your sessions in it. This one trades that reach for actually being usable every day.
+## Why
+
+No launch flags and no restarts is the whole design premise. Marionette/WebDriver-based browser MCPs (including [`firefox-devtools-mcp`](https://github.com/mozilla/firefox-devtools-mcp), which this project once had a sibling fork of) reach further into the browser, but they require launching it with `--marionette`, so they can't drive the browser you already have open with all your sessions in it. This one trades that reach for actually being usable every day.
+
+Use it when the automation has to happen **in your real browser** — authenticated dashboards, admin consoles, anything behind a login — or when you want several container-scoped MCP entries (`zen-cxv`, `zen-personal`, …) sharing one running browser that never gets interrupted.
 
 ```
 Claude Code  --stdio-->  MCP server (per session, --container-scoped)
@@ -20,42 +24,58 @@ Claude Code  --stdio-->  MCP server (per session, --container-scoped)
                          MV3 extension (signed, in daily Zen)
 ```
 
-## What this is good for, and what it can't do
+## Quickstart
 
-Use it when the automation has to happen **in your real browser** — authenticated dashboards, admin consoles, anything behind a login — or when you want several container-scoped MCP entries (`zen-cxv`, `zen-personal`, …) sharing one running browser that never gets interrupted.
+You need Node 20+, Zen (or stock Firefox), and a free [AMO](https://addons.mozilla.org) account to sign the extension. Every step below is expanded in [docs/install.md](docs/install.md).
 
-The current surface is **41 tools** (38 browser tools plus 3 local navigation-memory tools).
+**1. Build.**
 
-What the MV3 sandbox puts out of reach, and what to use instead:
+```sh
+git clone https://github.com/cxrobx/zen-mcp.git
+cd zen-mcp
+npm install
+npm run build
+```
 
-| Out of reach | Use instead |
-|---|---|
-| Browser prefs (`set_firefox_prefs`) | `user.js` or `about:config` |
-| Chrome-privileged JS (driving the browser's own UI) | not available — this is a hard WebExtension boundary |
-| File upload by path | Playwright, for anything that doesn't need your session |
-| Full network response bodies | reachable but not yet built — `webRequest.filterResponseData()` (Firefox-only MV3 API; needs `webRequest` + `webRequestBlocking` + `webRequestFilterResponse`) |
+**2. Start the daemon.** It writes the auth token to `~/.config/zen-mcp/auth.token` on first launch. To keep it running, use the launchd plist in [docs/install.md](docs/install.md#start-the-daemon).
 
-A Marionette mode was considered and deliberately rejected: it would still need the launch flag (so it would be dark by default), and the privileged tools additionally need `--remote-allow-system-access`, which exposes **unauthenticated** chrome-privileged execution to anything that can open a socket to `127.0.0.1:2828`.
+```sh
+node daemon/dist/index.js --port 8766
+```
 
-### Input is synthetic, and pages can tell
+**3. Sign the extension** with AMO API credentials from https://addons.mozilla.org/en-US/developers/addon/api/key/ (one-time):
 
-Every click, hover and key press is built in JavaScript and fired with `dispatchEvent`, so the page sees `isTrusted: false`. Firefox gives WebExtensions no way to produce trusted input. Most sites never check, and in-page buttons, links, forms and app controls work normally. What does not happen is anything the browser reserves for a real user action, or anything that belongs to the browser rather than the page:
+```sh
+export AMO_KEY="user:1234567:42"
+export AMO_SECRET="..."
+npm run extension:sign
+```
 
-| Doesn't happen | Do this instead |
-|---|---|
-| A click that opens a new tab or window (`target="_blank"`, `window.open`) — the popup blocker stops it, and Firefox's "prevented a pop-up" bar is outside what `screenshot_page` captures | For a `_blank` link, `click` names the URL in its result (`opens in a new tab: <url>`); `open_url` it. A button that builds its URL in script has no workaround |
-| Clipboard writes, fullscreen, file pickers, audible autoplay | Not reachable. File uploads: Playwright, where the session isn't needed |
-| CSS `:hover` — `hover` fires mouse events but never puts the element in the hover state | Works only on menus that open from JavaScript listeners |
-| The browser's own handling of a key: `press_key` doesn't type text, move focus on `Tab`, submit a form on `Enter`, or reach browser shortcuts like `Cmd+L` | `fill`/`type` for text, `click` the submit button, `open_url`/`navigate_page` for navigation |
-| Sites that check `isTrusted` and ignore synthetic events (some anti-bot checks, a few components) | Hand the click back to the user |
+**4. Install it in Zen,** then in `about:addons` -> Zen Extension MCP Bridge -> **Permissions and data**, toggle **Access your data for all websites** ON (needed for `screenshot_page`).
 
-Where the page cancels part of a click, `click` behaves as a browser does (since extension 0.0.21): a cancelled `pointerdown` suppresses `mousedown`/`mouseup` and leaves focus alone, and a cancelled `mousedown` leaves focus alone. Before that, the forced focus opened and immediately closed menus that cancel the press to keep focus off their trigger (Radix-style).
+```sh
+open -a "/Applications/Zen.app" extension/web-ext-artifacts/d27cc...-X.Y.Z.xpi
+```
 
-Real trusted input would need either browser remote control (rejected above) or chrome-privileged code loaded into Zen — out of scope today. So far the limit has come up once (a button in an embedded admin app that opened its page in a new tab), and handing that click to the user covered it.
+**5. Connect the extension to the daemon.** In the extension's Preferences page, set **Daemon URL** to `ws://127.0.0.1:8766` and **Auth token** to the contents of:
 
-## Tool surface
+```sh
+cat ~/.config/zen-mcp/auth.token
+```
 
-Per-tab tools take `tabId` (durable) or `pageIdx` (positional) — see [Addressing tabs](#addressing-tabs-tabid-vs-pageidx) below before using `pageIdx`.
+The status pill should flip to `authenticated` within a few seconds.
+
+**6. Register it in Claude Code:**
+
+```sh
+claude mcp add zen-ext -s user -- node /abs/path/to/zen-mcp/server/dist/index.js --port 8766
+```
+
+`claude mcp list` should report `✔ Connected`, which proves the daemon and extension are both up. Then ask for something only your signed-in browser can do, for example *"open my billing dashboard and tell me this month's total"*; the agent starts with `open_url`, which lands in the tab you already have open on that site.
+
+## What it does
+
+The current surface is **41 tools** (38 browser tools plus 3 local navigation-memory tools). Per-tab tools take a durable `tabId` (or a positional `pageIdx`; see [addressing tabs](docs/tools.md#addressing-tabs-tabid-vs-pageidx)).
 
 | Bucket | Tools |
 |---|---|
@@ -68,354 +88,28 @@ Per-tab tools take `tabId` (durable) or `pageIdx` (positional) — see [Addressi
 | **Diagnostics** | `get_firefox_info` |
 | **Navigation memory** | `get_domain_playbook`, `nav_memory_stats`, `nav_memory_forget` |
 
-### Addressing tabs: `tabId` vs `pageIdx`
-
-Every per-tab tool accepts **either** `tabId` (durable) or `pageIdx` (positional) — exactly one, never both. Both come from `list_pages`, which prints `tabId=NNN` on each line and a `tabSet=` fingerprint in its header.
-
-**Prefer `tabId`.** `pageIdx` is a position in the currently visible tab list, so it is only valid for as long as that list is unchanged.
-
-> ⚠️ **Zen Workspaces caveat.** Zen builds the tab list from the **active workspace's** strip only, so `browser.tabs.query({})` never enumerates tabs in other workspaces — they are not hidden-but-listed, they are simply not in the list. Switching workspaces mid-session therefore re-points every `pageIdx` at a different tab, and no error is raised: the operation just lands somewhere else.
->
-> A `tabId` is different: it is an identity, and Zen's id map is *not* workspace-scoped. Since extension 0.0.18 a tab in another workspace is resolved by id (`pages.get`) and every id-addressed tool reaches it **in place** — reads, DOM actions, screenshots, navigation — without switching your workspace. `list_pages({ includeHidden: true })` enumerates those tabs after the visible set, marked `[-]` (no position). Only a tab that exists in *no* workspace errors (`NOT_FOUND … the tab was closed`). Moving the browser there is still deliberate: `select_page` on such a tab, or `open_url(..., active: true)`, makes Zen switch to its workspace and says so.
-
-Optional guard for `pageIdx` callers: pass `expectTabSet` with the fingerprint from the `list_pages` header. If the visible set changed at all (tab opened, closed, or workspace switched), the call fails with `STALE` **without acting**.
-
-`get_firefox_info` reports `tabs.visible` and `tabs.fingerprint` for the active workspace. It reports no workspace id because **Zen exposes none to WebExtensions** — the fingerprint is the only available signal, and while it always changes on a workspace switch, it also changes on any ordinary tab open/close. The same gap is why hidden tabs are flagged "other workspace" rather than named: the workspace a tab belongs to is a Zen-internal tab attribute the API never surfaces.
-
-### Container routing: let the domain pick the container
-
-Without a route table, a URL's container is decided by *which MCP entry issued the call* — so the same site lands in a different cookie jar depending on whether it was `zen-ext` or `zen-cxv`, and every call opens another duplicate tab. A **host → container table** makes the domain decide instead.
-
-The table is a user config file, absent by default, read from `$XDG_CONFIG_HOME/zen-mcp/containers.json` (falling back to `~/.config/...`), or from `ZEN_MCP_ROUTES`:
-
-```json
-{
-  "containers": {
-    "Artist Advisory": ["artistadvisory.io"],
-    "CXVentures": { "domains": ["cxventures.io"], "aliases": ["acct_1ABC99"] },
-    "Buildersbuddy": ["buildersbuddy.org", "localhost:3200"],
-    "Geek": { "domains": ["claude.ai", "pocketbuddy.org"], "account": "you@example.com" }
-  },
-  "accounts": { "pocketbuddy.org": "owner@example.org" },
-  "consoles": ["search.google.com"]
-}
-```
-
-`accounts` maps a host to the identity expected to be signed in there, and a container may
-declare a default `account` for its hosts. The host's own entry wins, because one cookie jar
-routinely holds several signed-in accounts and the host is what picks between them —
-`pocketbuddy.org` and `decodo.com` both live in Geek but sign in as different people. It is
-**advisory**: `open_url`, `new_page_in_container` and `container_routes` print
-`expected account: ...`, nothing enforces it. A malformed account, or one naming a host
-nothing routes, fails the whole file loudly rather than being dropped.
-
-The two carriers are a top-level section and an extra key on a container object because
-**every form in this file must be ignorable by an older server**. Dozens of long-lived MCP
-processes read it, each loads its parser once, and a session can stay up for weeks — so a
-grammar only new code can parse would disarm routing everywhere until the last one cycled,
-falling back to the silent wrong jar the table exists to prevent. Unknown keys are skipped by
-every past parser; a non-string inside a pattern list is not.
-
-Each **container** declares its identifying strings: `domains` (a bare list is shorthand for domains-only) and optional `aliases` — opaque strings like a Stripe account id for consoles whose URLs carry no domain. Every domain is automatically a host rule too, so the simple case needs nothing else.
-
-A **console** is a shared multi-project host — one login page, N projects' dashboards — like Google Search Console, where only the URL's `resource_id` says which property you're looking at. A console URL routes to whichever container's domain or alias appears in the **percent-decoded path, query, or fragment** — never the hostname or userinfo, so a container owning `stripe.com` cannot silently swallow every URL on a `dashboard.stripe.com` console — matched on token boundaries (so `pocketbuddy.org` claims neither `notpocketbuddy.org` nor `pocketbuddy.org.evil.com`). A `*.example.com` domain contributes the token `.example.com`, excluding the apex exactly as its host rule does.
-
-Because the query is where consoles actually put the property, **the URL's own text decides the container** — appending `?x=someproject.org` steers routing. The claim catches accidents, not hostile URLs; pass `container` explicitly for a console URL you got from a page or an email. A console URL that mentions *no* configured string — the property picker, an unconfigured site — **fails loudly and opens nothing**, because falling back to the session default is precisely the wrong-cookie-jar accident the table exists to prevent. Two escape hatches: pass `container` explicitly (always wins), or add a plain `routes` rule for the console host to act as its deliberate default. **Only list a host under `consoles` if its URLs actually carry your domains or aliases** — Google Analytics, for instance, keys URLs by numeric property id, so listing it without matching aliases makes every GA URL error.
-
-The older `{ "routes": { "Container": ["host", ...] } }` shape still works, alone or alongside the sections above.
-
-**`projects`** picks the session default from the directory the Claude session runs in. Host rules can only route hosts that name a project; a Google Doc, a Gmail thread or a Stripe page looks the same whichever client it belongs to. So a session started in or under a listed directory defaults to that container for every URL no host rule covers:
-
-```json
-{
-  "containers": { "Example Co": ["example.com"] },
-  "projects": {
-    "Example Co": ["~/Projects/example-co", "~/clients"],
-    "Side Project": ["~/Projects/side-project"]
-  }
-}
-```
-
-The most specific directory wins (`~/clients/acme` can map elsewhere than `~/clients`), matching is on whole path segments, and symlinks and letter case are resolved first, so `~/projects/x` matches a rule written as `~/Projects/x`. It outranks `--container`, which becomes the fallback for sessions started anywhere else, so one user-scope registration serves every project. `~` and `/` are refused: `--container` is the catch-all layer. A directory that doesn't exist is reported by `container_routes` and never matches, rather than failing the file. A rule naming a container that doesn't exist errors and opens nothing, like a host rule would. The directory is read when the server starts and again on `container_routes({ reload: true })`.
-
-The agent is told this at session start (the server's MCP instructions name the default and where it came from), and every call that falls back to the session default says so and suggests reopening with `container` when the task belongs to a different project. The server knows the directory; only the agent knows which client the task is for.
-
-Matching: a rule matches its host **and its subdomains** (`cxventures.io` covers `qes.cxventures.io`); `*.example.com` matches subdomains only; `localhost:3000` pins a port. The most specific matching rule wins — console rule (host + identifying string) over any host-only rule, exact host over parent domain, port-pinned over port-agnostic.
-
-### fill_secret: Keychain secrets without transcript exposure
-
-`fill`'s `value` parameter is the only door into a form field, and everything in a tool call is conversation transcript — so filling a credential meant either exposing it or giving up on the browser. `fill_secret` closes that gap: it takes a secret **NAME**, resolves the value from the macOS login Keychain (service `cx-secret`, the secrets-kit store) **inside the server process**, and hands it straight to the fill RPC. The value transits only process memory and the token-authenticated localhost WebSocket — never the transcript. The result reports the name and character count; every outgoing string (error paths included) is scrubbed of the value.
-
-A secret may only be filled into a host it is **explicitly bound to**, in `$XDG_CONFIG_HOME/zen-mcp/secrets.json` (fallback `~/.config/...`, override `ZEN_MCP_SECRETS`):
-
-```json
-{
-  "secrets": {
-    "MILLIONVERIFIER_PASSWORD": ["app.millionverifier.com"]
-  }
-}
-```
-
-Host match is **exact** (binding `example.com` does not cover `login.example.com` — list both if both are real fill targets), and an unbound host is an **error, never a fallback**: the binding is what stops a misread page or a prompt-injected session from steering a credential into a lookalike form, the same way a password manager binds credentials to origins. A malformed config is a reported error, never treated as empty. First use per server binary may pop a macOS Keychain access dialog — approve it once; a `TIMEOUT` error from this tool usually means that dialog is waiting on screen.
-
-Precedence, highest first: **explicit argument** (`new_page_in_container`, `open_url({ container })`) → **host rule** → **session default** (`set_default_container`, else the `projects` directory, else `--container`) → no container. A host rule outranking the session default is what makes a project's URL land in that project's jar from any `zen-*` entry. Every tab-opening call prints the decision and its source, so routing is never invisible:
-
-```
-new page tabId=1226 -> https://artistadvisory.io/artists (Artist Advisory)
-container: Artist Advisory (firefox-container-8) via route "artistadvisory.io" in ~/.config/zen-mcp/containers.json
-```
-
-`open_url` is the tool that uses this end to end: it resolves the container, then **goes to the tab already open on that host in that container** — focusing it if it is already at that URL, otherwise navigating it — and opens a new tab only when there is none. Reuse looks in the active Zen workspace first and then in the other workspaces, so a logged-in tab sitting in another workspace is reused in place (and reported as `[in another Zen workspace]`) instead of a fresh tab landing on a login page. Reuse is `reuse: "host"` by default; `"exact"` reuses only a tab already at that URL, `"never"` always opens. Like `new_page`, it stays in the background unless `active: true`.
-
-One limit worth knowing: a tab **cannot change container** — `navigate_page` therefore says so when the URL you are loading is mapped elsewhere, rather than pretending it fixed it.
-
-Failure modes are loud on purpose: a rule naming a container that does not exist **errors and opens nothing**, because a silent fallback is how a login ends up in the wrong jar. A missing file is simply "no rules"; a malformed one reports the parse error instead of looking empty. Inspect the live state with `container_routes` (add `url` to see how one URL resolves, `reload: true` after editing the file) or the `mcp.containerRoutes` line in `get_firefox_info`. Set `ZEN_MCP_CONTAINER_ROUTES=0` to switch routing off for an entry.
-
-### interactive_elements and navigate_goal
-
-`interactive_elements` lists a tab's controls one per line (UID, kind, label, link destination, row and region) from a fresh snapshot, so the UIDs work with `click_by_uid`. It is roughly 6× smaller than `take_snapshot` (measured on Search Console: 2,909 vs 18,764 characters). Row context tells same-label controls apart, and field values are never shown.
-
-`wait_for({ condition: "stable" })` waits until the page's interactive-control count holds for `stableMs` (default 500). Use it after a click on an asynchronously rendering page when you don't know which text will appear.
-
-`navigate_goal` reaches a **read-only** destination ("open the Sitemaps report") with TypeSafe's Jev model choosing each click, so the calling model isn't consulted per step. It only clicks links, buttons, tabs and menu items; it withholds fields, toggles, off-host links and action-word labels; it asks Jev whether the chosen control could change anything before clicking; and it stops on a sign-in page, low confidence, `none`, a repeated click, the page moving between observation and click, leaving the host, or `maxSteps`. It returns a per-step trace that says where every millisecond went (Jev, waiting on the page, and why). Pass `expect` (text that must appear in the final URL or visible text) to have **code** verify the finish; without it the result is marked `DONE (unverified)`, because Jev's "done" is a judgment, not evidence. After a navigating click it waits for the page's **title to change** before a short hold, not for a quiet window: on an SPA the URL flips at once and the content swaps a second or two later, and a quiet window measured "stable" on the old view.
-
-It sends the goal, page title/path/headings, up to 2,000 characters of visible text, and control labels (all redacted for emails, tokens and ids) to `api.typesafe.ai`, so it runs **only on hosts listed** in `$XDG_CONFIG_HOME/zen-mcp/jev.json` (fallback `~/.config/...`, override `ZEN_MCP_JEV_CONFIG`):
-
-```json
-{ "hosts": ["search.google.com"] }
-```
-
-Exact hosts only. An absent file means "not enabled", a malformed one is an error, and an unlisted host sends nothing and never reads the key. **Financial sites are refused in code** (Stripe, Mercury, Plaid, PocketBuddy, Oracle Fusion, SAM.gov, banks and payment rails; see `FINANCIAL_DOMAINS` in `server/src/jev.ts`), and listing one makes the whole file an error. The key is `TYPESAFE_API_KEY` in the login Keychain (`sk TYPESAFE_API_KEY`). Design, thresholds and measurements: [`docs/jev.md`](docs/jev.md).
-
-Tools the Marionette-based predecessor had that have **no WebExtension equivalent**, and so are absent here by design: `list_privileged_contexts` / `select_privileged_context` / `evaluate_privileged_script`, `set_firefox_prefs` / `get_firefox_prefs`, `restart_firefox`, `upload_file_by_uid`, `install_extension` / `list_extensions` / `uninstall_extension`.
-
-Deferred to v2 (need degraded-fidelity content-script bridges): `list_console_messages`, `clear_console_messages`, `list_network_requests`, `get_network_request`, `accept_dialog`, `dismiss_dialog`, `screenshot_by_uid`, full-page screenshot.
-
-Fidelity gaps to know:
-- `screenshot_page` captures the target tab's visible viewport in place via `tabs.captureTab(tabId)` — it does **not** activate the tab or change window focus. It defaults to JPEG quality 80; pass `format: "png"` for lossless output.
-- `evaluate_script` requires JSON-serializable results (the `scripting.executeScript` constraint). Returning DOM nodes or non-serializable objects fails. The function body is transpiled and interpreted without `eval()`/`Function()`, so page CSP does not block it.
-- Large textual responses from `take_snapshot`, `evaluate_script`, `get_page_text`, `read_page`, `get_cookies`, and `get_storage` honor `maxBytes` + `cursor`; `interactive_elements` honors `maxBytes`.
-- Locator actions (`click`, `hover`, `fill`, `type`, `drag`, `select_option`, `press_key`) auto-wait for matches with `timeoutMs` and scroll targets into view before acting.
-
-Focus behavior: automation is non-disruptive by default. `new_page` / `new_page_in_container` open tabs in the **background** (pass `active: true` to foreground), `navigate_page` and the DOM tools act on a tab by id without activating it, and `screenshot_page` captures without focus. The only tools that surface a tab to the foreground are `select_page` and an explicit `active: true` on `new_page` / `open_url` — and when the tab lives in another Zen workspace, those are also the only tools that make Zen switch workspaces. This means an agent can drive one container while you browse in another without your focus being stolen.
-
-**Spaces.** A tab opened in a container is filed into the Zen space bound to that container, in the background, so it never lands in the space you happen to be in and your view doesn't move. Zen's Space Routing rules can't see a tab's container, so zen-mcp opens each container tab at a marker (`about:blank#zen-space=<container id>;`) that one rule per container sends to the right space, then loads the real URL. Install the rules with `npm run spaces:markers -- --write` and restart Zen once (it reads them at startup); `npm run check:spaces` verifies them and `scripts/probe-space-marker.mjs` proves it live. Your own browsing is untouched, since nothing you do produces a marker. Keep `zen.workspaces.force-container-workspace` off: it also files tabs by container, but switches your view to every tab it files.
-
-## Requirements
-
-- Node 20+
-- Zen browser (Firefox 115+ derivative) — works in stock Firefox too
-- An [AMO](https://addons.mozilla.org) account (free) for signing the extension
-- Optional: Claude Code CLI subscription auth for background navigation-note distillation
-- Optional: Ollama with `nomic-embed-text` for semantic deduplication and playbook search
-
-## Build
-
-```sh
-git clone https://github.com/cxrobx/zen-mcp.git
-cd zen-mcp
-npm install
-npm run build
-```
-
-Produces:
-- `daemon/dist/index.js` — router process
-- `server/dist/index.js` — MCP stdio server
-- `extension/dist/` — MV3 extension bundle (esbuild IIFE, no module imports at runtime)
-
-## Sign + install (one-time)
-
-### 1. Get AMO API credentials
-
-1. Sign in at https://addons.mozilla.org with a Firefox Account.
-2. Go to https://addons.mozilla.org/en-US/developers/addon/api/key/ — accept the developer agreement.
-3. Click **Generate new credentials**. You get:
-   - **JWT issuer** (looks like `user:1234567:42`)
-   - **JWT secret** (64-hex string, shown once — save somewhere durable)
-
-### 2. Sign
-
-```sh
-export AMO_KEY="user:1234567:42"
-export AMO_SECRET="..."
-npm run extension:sign
-```
-
-`web-ext sign --channel=unlisted` uploads the bundle and Mozilla's automated signer returns a signed `.xpi` in `extension/web-ext-artifacts/`. Usually <60s. The `gecko.id` in `extension/src/manifest.json` (`zen-ext-mcp@cxrobx`) is per-developer — change it if you fork this so you don't collide.
-
-### 3. Install in Zen
-
-```sh
-open -a "/Applications/Zen.app" extension/web-ext-artifacts/d27cc...-X.Y.Z.xpi
-```
-
-Accept the install prompt. **Then grant the host permission**:
-
-- `about:addons` -> Zen Extension MCP Bridge -> **Permissions and data** -> toggle **Access your data for all websites** ON.
-
-This is required for `screenshot_page` (`tabs.captureTab` needs host access to the tab being captured). The other tools work without it.
-
-> **Upgrade gotcha**: in-place upgrades (open a newer XPI while old is installed) sometimes silently no-op in Zen. If the version doesn't change in `about:addons`, **remove the old extension first**, then install the new one. Storage (URL + token settings) gets wiped on full removal.
-
-### 4. Configure the extension
-
-Find the auth token:
-
-```sh
-cat ~/.config/zen-mcp/auth.token
-```
-
-In Zen, open the extension's Preferences page (via `about:addons`'s `⋯` menu, or the toolbar puzzle-piece icon — varies by Zen UI version). Paste:
-
-- **Daemon URL**: `ws://127.0.0.1:8766`
-- **Auth token**: contents of `auth.token`
-
-Click Save. The pill should flip to `authenticated` within 1-2 seconds (it can take up to ~10s if the extension was recently restarted because of reconnect backoff).
-
-## Run
-
-### Start the daemon
-
-```sh
-node daemon/dist/index.js --port 8766
-```
-
-The daemon writes a 32-byte random token to `~/.config/zen-mcp/auth.token` on first launch (mode 0600). All later launches reuse it.
-
-Default port is 8766. If you collide, use `--port <free-port>` and update the extension's options page URL to match.
-
-Navigation memory defaults to `~/.config/zen-mcp/nav-memory/`. Override it with `--nav-db <dir>` or `ZEN_MCP_NAV_DB`; override the distiller executable with `--claude-bin <path>` or `ZEN_MCP_CLAUDE_BIN`. Set `ZEN_MCP_NAV_MEMORY=0` on an MCP server process to disable new capture and automatic note injection while retaining the explicit playbook tools.
-
-A simple launchd plist for keeping the daemon running:
-
-```xml
-<!-- ~/Library/LaunchAgents/io.cxrobx.zen-mcp.daemon.plist -->
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>io.cxrobx.zen-mcp.daemon</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/node</string>
-    <string>/Users/YOU/Projects/zen-mcp/daemon/dist/index.js</string>
-    <string>--port</string>
-    <string>8766</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-</dict>
-</plist>
-```
-
-Load it: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.cxrobx.zen-mcp.daemon.plist` (`bootout` to stop it; the older `load`/`unload` verbs are deprecated).
-
-### Register MCP servers in Claude Code
-
-Each entry is short-lived (one per Claude Code session) and connects to the daemon as a client.
-
-Everything after `--` is the subprocess command, so the whole `node …` invocation goes there.
-
-**Single, no scoping**:
-
-```sh
-claude mcp add zen-ext -s user -- node /abs/path/to/zen-mcp/server/dist/index.js --port 8766
-```
-
-**Container-scoped** (one per container — they all share the daemon and extension):
-
-```sh
-P=/abs/path/to/zen-mcp/server/dist/index.js
-claude mcp add zen-cxv           -s user -- node "$P" --port 8766 --container CXVentures
-claude mcp add zen-buildersbuddy -s user -- node "$P" --port 8766 --container Buildersbuddy
-claude mcp add zen-personal      -s user -- node "$P" --port 8766 --container Personal
-```
-
-A container name containing a space must be quoted as one argument: `--container "Artist Advisory"`. Use `-s user` for entries you want in every session; the default scope is `local` (this project only). Confirm with `claude mcp list` — each entry should report `✔ Connected`, which also proves the daemon and extension are both up.
-
-`--container <name>` resolves lazily on first new-tab use: 0 matches errors with the available list; >1 matches errors with the matching list.
-
-When `--container` is set, it is the **fallback** for URLs no host rule claims, and for sessions outside every `projects` directory — see [Container routing](#container-routing-let-the-domain-pick-the-container), which outranks it. With `projects` configured, one user-scope entry with `--container Personal` does what the per-container entries above used to, without registering every tool once per container. `new_page_in_container` always takes an explicit name and wins over both. `set_default_container` updates the fallback at runtime for that session and outranks the directory. Both new-tab tools open in the background by default; pass `active: true` to foreground the tab.
-
-## Architecture
-
-### Multi-entry pattern
-
-Three Claude Code MCP entries (e.g. `zen-cxv`, `zen-personal`, `zen-buildersbuddy`) each spawn a fresh **MCP server process**. All three connect to the same **daemon** (single TCP port). The daemon routes each request to the single **extension** and routes the response back to the originating client. Order-preserving with a per-request id; no cross-talk.
-
-Two MCP entries calling `new_page` simultaneously each open their own tab in their own container — the daemon doesn't serialize them.
-
-### Auth + heartbeat
-
-- **Token**: shared secret, 32 bytes random hex, stored at `~/.config/zen-mcp/auth.token` (0600). First message on every connection must be a `hello` with the token within 5s. Constant-time compared via `crypto.timingSafeEqual`.
-- **Heartbeat**: daemon sends WebSocket pings every 30s. If no pong, the connection is terminated and (for clients) eligible for replacement.
-- **Reconnect**: clients (server + extension) reconnect with exponential backoff capped at 10s. Resets to 0 on `welcome`.
-
-### What the daemon owns
-
-The daemon binds the WebSocket port. Exactly **one** extension connection at a time (a new hello with role=extension replaces the old one and fails its in-flight requests). Many clients. Extension-bound requests are routed by request id; a per-id timer fails the call after 30s.
-
-### Navigation memory
-
-The server records only bounded structural facts such as normalized URL shapes, sanitized locators, tool success, navigation, match counts, and stable error codes. It never records entered form values, cookie/storage values, page bodies, evaluated code, find queries, screenshots, or arbitrary error text. Events stream to the daemon during the session; disconnect atomically finalizes one pending work file per host.
-
-The daemon stores notes in an atomic, versioned JSON document and ranks exact-host observations before public-suffix-aware related hosts. Path-scoped notes are injected only on matching paths. Injection is summary-only, capped at 1.5 KiB, framed as advisory data, and occurs once per host per MCP process. `get_domain_playbook` returns the complete reviewed context on demand.
-
-Pending telemetry is distilled in an empty temporary directory by `claude -p --safe-mode --tools "" --no-session-persistence` with schema-constrained output. There is no agentic fallback. Ollama is optional: when unavailable, deterministic ranking and normalized-text deduplication remain active, and missing embeddings are backfilled later.
-
-Notes consolidate instead of accumulating. Each distill run is shown the host's existing notes as a numbered list and answers with `reinforces: <number>` when an observation confirms one, so the note's `reinforced` count grows and it outranks one-offs. An hourly sweep is the safety net for duplicates that arrive by other routes: within each host it merges pairs whose embeddings are at least 0.86 similar, summing `reinforced`, keeping the higher-confidence note, and logging every merge. Seeds can be merge targets but are never deleted.
-
-Sessions are checkpointed to disk when they go idle for 10 minutes or reach 400 events, so an abrupt daemon kill loses at most a few minutes of telemetry and long-running sessions flush continuously.
-
-State directories are mode `0700` and files are `0600`. Pending work is capped at 200 files, failed at 50, and consumed work — archived to `sessions/done/` rather than deleted, as a durable redacted usage history — at 300; all expire after 30 days. `nav_memory_forget` deletes a note or an exact host, including its raw work by default. Forgetting a trusted seed creates a durable tombstone. Export is a copy of `notes.json`; for import, stop the daemon, replace that file with mode `0600`, and restart.
-
-`nav_memory_stats` answers "is it learning?" in one call: the `etl` block reports `created` vs `merged` note mutations, `consolidated` sweep merges, and the `lastEtlAt` / `lastConsolidateAt` timestamps.
-
-### Snapshot caching
-
-`take_snapshot` injects `extension/dist/snapshot/inject.js` via `scripting.executeScript({ files, world: 'MAIN' })`, then calls `window.__zenExtMcpCreateSnapshot`. The returned `uidMap` is cached in the background script keyed by tabId and persisted in `browser.storage.session`, so UIDs survive routine MV3 background suspension. Subsequent `click_by_uid`/`fill_by_uid`/etc. resolve uid -> selector via the cache, then run an inline action `func` against `document.querySelector(selector)`. Traversal is bounded at 100 DOM levels and 5,000 captured nodes so deeply nested framework panels remain reachable without allowing unbounded snapshots.
-
-The cache is dropped on full navigation, SPA history updates, hash changes, and `tabs.onRemoved`. Take a fresh snapshot after any meaningful route change.
-
-## Development loop
-
-For non-prod iteration, skip AMO signing — load the extension as a temporary add-on via `web-ext run`:
-
-```sh
-npm run extension:run
-```
-
-Navigation-memory verification is local and deterministic:
-
-```sh
-npm run test:nav-memory
-node scripts/probe-navmem.mjs
-node scripts/smoke.mjs
-```
-
-Container routing has an offline suite and a live probe. The probe reads your real table read-only, then exercises `open_url` against a throwaway table so reuse can only land on its own tab:
-
-```sh
-npm run test:container-routes
-node scripts/probe-routes.mjs
-```
-
-This opens a fresh Firefox profile with `extension/dist/` loaded as a temporary extension, no signing required. The extension is gone after the dev profile closes — fine for development.
-
-When iterating on extension code with the signed install in production: rebuild + re-sign + remove + reinstall. Use the `npm run extension:sign` script (requires `AMO_KEY` + `AMO_SECRET`).
-
-## Troubleshooting
-
-**`extension not connected` from a tool call**: the extension is between reconnect attempts. Check `about:addons` -> Preferences -> status pill. If it says `error`, look at the background console (`about:debugging` -> Inspect on this extension -> Console). Common: token mismatch, daemon not running, port wrong.
-
-**`Missing host permission for the tab` on `screenshot_page`**: the host permission isn't granted. Toggle "Access your data for all websites" in the extension's Permissions tab.
-
-**Storm of "replacing extension connection" in daemon log**: an old buggy version is still running alongside a new one (two background instances both reconnecting and replacing each other). Fully quit Zen and relaunch — should resolve. If it persists, uninstall and reinstall the extension.
-
-**Port collision**: `--port 8766` (or any other free port) on the daemon, then update the extension's options URL.
-
-**Token rotation**: `rm ~/.config/zen-mcp/auth.token` and restart the daemon. Paste the new value into the options page.
+- **Container routing.** A host → container table, plus per-directory defaults, decides which cookie jar a URL opens in, and `open_url` reuses the tab already open there. See [docs/container-routing.md](docs/container-routing.md).
+- **Non-disruptive by default.** Tabs open in the background and tools act on a tab by id without focusing it, so an agent can drive one container while you browse in another.
+- **`fill_secret`.** Fills a form field from a macOS Keychain secret by name, only into hosts it is bound to, so the value never enters the transcript.
+- **`navigate_goal`.** Reaches a read-only destination with TypeSafe's Jev choosing each click, on opt-in hosts only. See [docs/jev.md](docs/jev.md).
+- **Navigation memory.** Learns privacy-minimized structural notes about sites it has driven and injects them as advisory hints. See [docs/nav-memory.md](docs/nav-memory.md).
+
+Input is synthetic (`isTrusted: false`), so popups, clipboard, file pickers and browser shortcuts are out of reach. The full list, and what to use instead, is in [docs/limitations.md](docs/limitations.md).
+
+## Docs
+
+| Doc | What's in it |
+|---|---|
+| [docs/install.md](docs/install.md) | Requirements, build, AMO signing, install gotchas, daemon launchd plist, nav-memory flags, container-scoped registration |
+| [docs/tools.md](docs/tools.md) | Tool surface, `tabId` vs `pageIdx` and Zen workspaces, `fill_secret`, `interactive_elements`, `navigate_goal`, absent and deferred tools, fidelity gaps, focus behavior, Zen spaces |
+| [docs/container-routing.md](docs/container-routing.md) | The `containers.json` format, accounts, consoles, `projects` directory defaults, matching, precedence, tab reuse, failure modes |
+| [docs/limitations.md](docs/limitations.md) | What the MV3 sandbox puts out of reach, why Marionette was rejected, synthetic-input consequences |
+| [docs/architecture.md](docs/architecture.md) | Multi-entry pattern, auth + heartbeat, what the daemon owns, snapshot caching |
+| [docs/nav-memory.md](docs/nav-memory.md) | Navigation memory design, privacy controls, consolidation, operations |
+| [docs/jev.md](docs/jev.md) | `navigate_goal` design, thresholds and measurements |
+| [docs/development.md](docs/development.md) | Dev loop with `web-ext run`, test suites and live probes |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Connection, permission, port and token problems |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## Security model
 
