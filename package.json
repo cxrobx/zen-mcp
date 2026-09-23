@@ -24,6 +24,7 @@
     "test:jev": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/interactive-goal.test.mjs scripts/navigate-goal.test.mjs",
     "test:click-feedback": "npm run build:shared && npm run build:server && node --test scripts/click-feedback.test.mjs",
     "check:spaces": "node scripts/check-space-sync.mjs",
+    "spaces:markers": "node scripts/gen-space-markers.mjs",
     "daemon": "node daemon/dist/index.js",
     "server": "node server/dist/index.js",
     "extension:run": "npm run run -w extension",

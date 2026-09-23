@@ -75,6 +75,7 @@ import {
   type RouteTable,
   routeSummaryLine,
 } from "./routes.js";
+import { isSpaceMarkerUrl, spaceMarkerUrl } from "./space-marker.js";
 
 export interface ScopeRef {
   current: FirefoxContainer | null;
@@ -503,7 +504,8 @@ function rememberPendingUrl(tabId: number, url: string): void {
 }
 
 function effectivePageUrl(page: PageInfo): string {
-  if (page.url && page.url !== "about:blank") return page.url;
+  // A container tab sits on its space marker (space-marker.ts) until the real load commits.
+  if (page.url && page.url !== "about:blank" && !isSpaceMarkerUrl(page.url)) return page.url;
   const pending = pendingUrls.get(page.tabId);
   if (!pending || Date.now() - pending.at > PENDING_URL_TTL_MS) return page.url;
   return pending.url;
@@ -728,6 +730,30 @@ export function registerTools(
         `${detail ?? ""} Nothing was opened - fix the name rather than letting the page land in the wrong cookie jar.`.trim(),
       );
     }
+  }
+
+  /**
+   * Every new tab goes through here. A container tab opens at its space marker first, so a
+   * generated Space Routing rule files it into the space bound to that container without
+   * moving the user's view (space-marker.ts), then loads the real URL. A tab with no
+   * container has no space to go to and opens directly, in whatever space is active.
+   */
+  async function openTab(url: string, cookieStoreId: string | undefined, active: boolean | undefined): Promise<NewPageResult> {
+    const params: { url: string; cookieStoreId?: string; active?: boolean } = {
+      url: cookieStoreId ? spaceMarkerUrl(cookieStoreId) : url,
+    };
+    if (active !== undefined) params.active = active;
+    if (cookieStoreId) params.cookieStoreId = cookieStoreId;
+    const r = await daemon.call<NewPageResult>(Methods.PagesNew, params);
+    if (!cookieStoreId) return r;
+    try {
+      await daemon.call(Methods.PagesNavigate, { tabId: r.tabId, url });
+    } catch (err) {
+      // A marker tab left behind is an empty tab in some space the user may not be looking at.
+      await daemon.call(Methods.PagesClose, { tabId: r.tabId }).catch(() => undefined);
+      throw err;
+    }
+    return { ...r, url };
   }
 
   /**
@@ -1000,10 +1026,7 @@ export function registerTools(
     async ({ url, active }) => {
       try {
         const decision = await decideContainer(url);
-        const params: { url: string; cookieStoreId?: string; active?: boolean } = { url };
-        if (active !== undefined) params.active = active;
-        if (decision.container) params.cookieStoreId = decision.container.cookieStoreId;
-        const r = await daemon.call<NewPageResult>(Methods.PagesNew, params);
+        const r = await openTab(url, decision.container?.cookieStoreId, active);
         rememberPendingUrl(r.tabId, url);
         const cn = r.containerName ?? "no container";
         // The tab reports about:blank until the load commits; report what it was asked for.
@@ -1115,10 +1138,7 @@ export function registerTools(
           );
         }
 
-        const params: { url: string; cookieStoreId?: string; active?: boolean } = { url };
-        if (active !== undefined) params.active = active;
-        if (decision.container) params.cookieStoreId = decision.container.cookieStoreId;
-        const r = await daemon.call<NewPageResult>(Methods.PagesNew, params);
+        const r = await openTab(url, decision.container?.cookieStoreId, active);
         rememberPendingUrl(r.tabId, url);
         return withNavMeta(
           ok([`new page tabId=${r.tabId} -> ${url} (${r.containerName ?? "no container"})`, ...tail].join("\n")),
@@ -1148,12 +1168,7 @@ export function registerTools(
     async ({ name, url, active }) => {
       try {
         const container = await containerNamed(name, "the name argument");
-        const params: { url: string; cookieStoreId: string; active?: boolean } = {
-          url,
-          cookieStoreId: container.cookieStoreId,
-        };
-        if (active !== undefined) params.active = active;
-        const r = await daemon.call<NewPageResult>(Methods.PagesNew, params);
+        const r = await openTab(url, container.cookieStoreId, active);
         rememberPendingUrl(r.tabId, url);
         const lines = [`new page tabId=${r.tabId} -> ${url} (${container.name})`];
         const match = matchContainerRoute(routes, url);

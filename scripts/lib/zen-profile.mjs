@@ -1,6 +1,7 @@
 /**
- * Read-side helpers for the live Zen profile, used by check-space-sync.mjs.
- * Read-only by design: nothing here writes to the profile.
+ * Helpers for the live Zen profile, used by check-space-sync.mjs and gen-space-markers.mjs.
+ * Nothing here writes to the profile; gen-space-markers.mjs is the one writer, and only
+ * of the Space Routing file.
  *
  * SPACES LIVE IN zen-sessions.jsonlz4, NOT IN places.sqlite. The zen_workspaces
  * table is a one-time migration source ZenSessionManager reads once on the first
@@ -87,6 +88,55 @@ export function mozlz4Decode(buf) {
   return dst.subarray(0, o);
 }
 
+/**
+ * Literal-only LZ4 block: one sequence carrying the whole payload, no matches. Valid LZ4
+ * (the final sequence is always literals-only) and plenty at these sizes; Zen's decoder
+ * read files written this way on 2026-08-25. Callers verify the round trip before writing.
+ */
+export function mozlz4Encode(payload) {
+  const raw = Buffer.from(payload, "utf8");
+  const parts = [];
+  if (raw.length < 15) {
+    parts.push(Buffer.from([raw.length << 4]));
+  } else {
+    parts.push(Buffer.from([0xf0]));
+    let rem = raw.length - 15;
+    const ext = [];
+    while (rem >= 255) {
+      ext.push(255);
+      rem -= 255;
+    }
+    ext.push(rem);
+    parts.push(Buffer.from(ext));
+  }
+  parts.push(raw);
+  const header = Buffer.alloc(12);
+  header.write(MAGIC, 0, "latin1");
+  header.writeUInt32LE(raw.length, 8);
+  return Buffer.concat([header, ...parts]);
+}
+
+/**
+ * The Space Routing rule each container needs so a tab zen-mcp opens in it lands in its
+ * space (server/src/space-marker.ts). Only a container bound to exactly one space gets one:
+ * with none there is nowhere to send it, and with two Zen would have to guess.
+ */
+export function expectedMarkerRules(containers, spaces, spaceMarkerReference) {
+  const rules = [];
+  for (const c of containers) {
+    const bound = spaces.filter((s) => s.containerId === c.userContextId);
+    if (bound.length !== 1) continue;
+    rules.push({
+      container: c.name,
+      space: bound[0].name,
+      reference: spaceMarkerReference(`firefox-container-${c.userContextId}`),
+      openIn: bound[0].uuid,
+      matchType: "contains",
+    });
+  }
+  return rules;
+}
+
 /** The live space list. containerTabId 0 (or absent) means "no container". */
 export function readSpaces(profile) {
   const f = join(profile, "zen-sessions.jsonlz4");
@@ -143,6 +193,13 @@ export function readPref(profile) {
   };
 }
 
+/** The whole routing file ({routes, defaultRouteExternal}), or null when there is none. */
+export function readRoutingFile(profile) {
+  const f = join(profile, ROUTING_FILE);
+  if (!existsSync(f)) return null;
+  return JSON.parse(mozlz4Decode(readFileSync(f)).toString("utf8"));
+}
+
 /** null when no rules file exists; {error} when it is unreadable. */
 export function readRoutingRules(profile) {
   const f = join(profile, ROUTING_FILE);
@@ -155,9 +212,14 @@ export function readRoutingRules(profile) {
 }
 
 export function readRouteTable() {
-  if (!existsSync(ROUTE_TABLE)) return { containers: {}, routes: {}, consoles: [] };
+  if (!existsSync(ROUTE_TABLE)) return { containers: {}, routes: {}, consoles: [], projects: {} };
   const raw = JSON.parse(readFileSync(ROUTE_TABLE, "utf8"));
-  return { containers: raw.containers ?? {}, routes: raw.routes ?? {}, consoles: raw.consoles ?? [] };
+  return {
+    containers: raw.containers ?? {},
+    routes: raw.routes ?? {},
+    consoles: raw.consoles ?? [],
+    projects: raw.projects ?? {},
+  };
 }
 
 /** host -> container name, flattening the route table's identity and residence tiers. */

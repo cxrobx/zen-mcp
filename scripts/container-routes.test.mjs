@@ -89,6 +89,8 @@ class StubExtension {
     // Firefox reports a brand-new tab as about:blank until its first navigation commits.
     // With this on, the stub reproduces that lag instead of resolving instantly.
     this.deferLoads = false;
+    // Make the next pages.navigate fail, as a real load can.
+    this.failNavigate = false;
   }
 
   reset() {
@@ -96,6 +98,7 @@ class StubExtension {
     this.hiddenTabs = [];
     this.requests = [];
     this.deferLoads = false;
+    this.failNavigate = false;
   }
 
   /** Let a deferred tab finish loading, as the browser eventually would. */
@@ -150,7 +153,9 @@ class StubExtension {
           tabId: this.nextTabId++,
           windowId: 1,
           index: this.tabs.length,
-          url: this.deferLoads ? "about:blank" : msg.params.url,
+          // A container tab opens at its space marker, which is the URL it reports until the
+          // real load commits; any other new tab reports about:blank until then.
+          url: this.deferLoads && !msg.params.url.startsWith("about:blank#") ? "about:blank" : msg.params.url,
           title: "",
           active: msg.params.active === true,
           cookieStoreId: store,
@@ -168,6 +173,12 @@ class StubExtension {
         };
       }
       case "pages.navigate": {
+        if (this.failNavigate) {
+          this.failNavigate = false;
+          return { error: { code: -32000, message: "stub: navigation failed" } };
+        }
+        // A deferred load keeps reporting the old URL until commit(), as the browser does.
+        if (this.deferLoads) return { result: { tabId: msg.params.tabId } };
         const nav = (t) => (t.tabId === msg.params.tabId ? { ...t, url: msg.params.url } : t);
         this.tabs = this.tabs.map(nav);
         this.hiddenTabs = this.hiddenTabs.map(nav);
@@ -908,7 +919,10 @@ test("reuse modes: exact declines a host-only match, never always opens", async 
   });
   assert.equal(never.isError, false, never.text);
   assert.match(never.text, /^new page tabId=\d+ /);
-  assert.equal(ext.requestsFor("pages.navigate").length, 0);
+  // The only navigate is the new tab loading its real URL after its space marker; no
+  // existing tab may be touched.
+  const newTab = Number(/tabId=(\d+)/.exec(never.text)[1]);
+  assert.deepEqual(ext.requestsFor("pages.navigate").map((r) => r.params.tabId), [newTab]);
 });
 
 test("a second open_url before the first tab has loaded does not duplicate it", async () => {
@@ -1285,4 +1299,61 @@ test("a project rule naming a container that does not exist fails loudly and ope
   assert.match(text, /does not exist/);
   assert.match(text, /from the project directory/);
   assert.equal(ext.requestsFor("pages.new").length, 0, "nothing may be opened");
+});
+
+// --- Zen space placement: container tabs open at a marker first ---------------------------
+// Space Routing rules match URLs and cannot see a tab's container, so a container tab opens
+// at about:blank#zen-space=<cookieStoreId>; (one generated rule per container files that
+// into the container's space) and only then loads its real URL.
+
+test("a container tab opens at its space marker, then loads the real URL", async () => {
+  ext.reset();
+  const url = "https://buildersbuddy.org/deals/7";
+  const r = await mcp.callTool("open_url", { url, reuse: "never" });
+  assert.equal(r.isError, false, r.text);
+  const created = ext.requestsFor("pages.new").at(-1).params;
+  assert.equal(created.url, "about:blank#zen-space=firefox-container-7;");
+  assert.equal(created.cookieStoreId, "firefox-container-7");
+  const tabId = Number(/tabId=(\d+)/.exec(r.text)[1]);
+  assert.deepEqual(ext.requestsFor("pages.navigate").at(-1).params, { tabId, url });
+  // The transcript names the real URL, never the marker.
+  assert.match(r.text, /^new page tabId=\d+ -> https:\/\/buildersbuddy\.org\/deals\/7 /);
+  assert.doesNotMatch(r.text, /zen-space=/);
+
+  // Same for the explicit-container tool.
+  ext.reset();
+  const forced = await mcp.callTool("new_page_in_container", { name: "CXVentures", url: "https://docs.example/d/9" });
+  assert.equal(forced.isError, false, forced.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.url, "about:blank#zen-space=firefox-container-9;");
+  assert.equal(ext.requestsFor("pages.navigate").at(-1).params.url, "https://docs.example/d/9");
+});
+
+test("the marker is terminated, so container 1's rule can never claim container 10", async () => {
+  const { spaceMarkerReference, spaceMarkerUrl, isSpaceMarkerUrl } = await import("../server/dist/space-marker.js");
+  assert.ok(!spaceMarkerUrl("firefox-container-10").includes(spaceMarkerReference("firefox-container-1")));
+  assert.ok(spaceMarkerUrl("firefox-container-1").includes(spaceMarkerReference("firefox-container-1")));
+  assert.equal(isSpaceMarkerUrl(spaceMarkerUrl("firefox-container-9")), true);
+  assert.equal(isSpaceMarkerUrl("about:blank"), false);
+  assert.equal(isSpaceMarkerUrl("https://example.com/#zen-space=firefox-container-9;"), false);
+});
+
+test("a tab with no container opens directly: there is no space to send it to", async () => {
+  ext.reset();
+  // mcp has no --container and this table routes nothing here, so the tab gets no container.
+  const r = await mcp.callTool("open_url", { url: "https://unmapped.example/y" });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.url, "https://unmapped.example/y");
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, undefined);
+  assert.equal(ext.requestsFor("pages.navigate").length, 0);
+});
+
+test("if the real load fails, the marker tab is closed rather than left empty", async () => {
+  ext.reset();
+  ext.failNavigate = true;
+  const r = await mcp.callTool("open_url", { url: "https://buildersbuddy.org/deals/8", reuse: "never" });
+  assert.equal(r.isError, true, "the failure must reach the caller");
+  const created = ext.requestsFor("pages.new").length;
+  assert.equal(created, 1);
+  const closed = ext.requestsFor("pages.close").map((c) => c.params.tabId);
+  assert.equal(closed.length, 1, "the blank marker tab must be closed");
 });
