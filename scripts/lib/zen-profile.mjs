@@ -163,9 +163,17 @@ export function readRouteTable() {
 /** host -> container name, flattening the route table's identity and residence tiers. */
 export function hostContainerMap(table) {
   const map = new Map();
-  for (const [containerName, hosts] of Object.entries(table.containers))
-    for (const h of hosts) map.set(h.toLowerCase(), containerName);
+  for (const [containerName, def] of Object.entries(table.containers))
+    for (const h of hostList(def)) map.set(h.toLowerCase(), containerName);
   for (const [containerName, hosts] of Object.entries(table.routes))
-    for (const h of hosts) map.set(h.toLowerCase(), containerName);
+    for (const h of hostList(hosts)) map.set(h.toLowerCase(), containerName);
   return map;
+}
+
+/** A container entry is `"a.com"`, `["a.com"]`, or `{domains, aliases}` (routes.ts compileContainerDefs); aliases are console tokens, not hosts. */
+function hostList(def) {
+  if (typeof def === "string") return [def];
+  if (Array.isArray(def)) return def;
+  const domains = def?.domains ?? [];
+  return typeof domains === "string" ? [domains] : domains;
 }
