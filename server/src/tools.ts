@@ -64,8 +64,10 @@ import { requireSecretBinding, resolveSecret, scrubSecretValue } from "./secrets
 import {
   accountForContainer,
   describeRouteTable,
+  displayPath,
   loadRouteTable,
   matchContainerRoute,
+  matchProjectDir,
   parseUrlTarget,
   reloadRouteTable,
   unmatchedConsoleClaim,
@@ -78,6 +80,50 @@ export interface ScopeRef {
   current: FirefoxContainer | null;
   requestedName?: string | null;
   resolving?: Promise<FirefoxContainer | null>;
+  /** Where the session default came from, printed on every call that falls back to it. */
+  source?: string;
+  /** The --container flag: the default when no "projects" directory covers the session. */
+  flagName?: string | null;
+  /** set_default_container ran, so a table reload no longer re-derives the default. */
+  pinned?: boolean;
+}
+
+/**
+ * Derive the session default: the most specific "projects" directory covering the working
+ * directory, else the --container flag. Runs at startup and on every table reload; an
+ * explicit set_default_container pins the choice and wins over both.
+ */
+export function applySessionDefault(scope: ScopeRef, table: RouteTable, cwd: string): void {
+  if (scope.pinned) return;
+  const project = matchProjectDir(table, cwd);
+  const name = project?.container ?? scope.flagName ?? null;
+  const source = project
+    ? `the project directory ${displayPath(project.dir)}`
+    : scope.flagName
+      ? "the --container flag"
+      : undefined;
+  if (scope.current?.name === name || (scope.current === null && scope.requestedName === name)) {
+    scope.source = source;
+    return;
+  }
+  scope.current = null;
+  scope.requestedName = name;
+  scope.resolving = undefined;
+  scope.source = source;
+}
+
+/** What the agent is told, once per session, about choosing a container. */
+export function containerInstructions(scope: ScopeRef): string {
+  const fallback = scope.requestedName ?? scope.current?.name ?? null;
+  const where = fallback
+    ? `this session's default container, ${fallback}${scope.source ? ` (from ${scope.source})` : ""}`
+    : "no container at all (Firefox's default cookie jar)";
+  return [
+    "Every tab opens in a Firefox container, and each container is a separate set of logins. Choose it from what you are working on, not only from the URL.",
+    "- open_url sends hosts in the route table (container_routes lists them) to their container automatically.",
+    `- Every other site - shared ones like Google Docs, Gmail or Stripe included - falls back to ${where}. If the page belongs to a different project or client than that, pass container to open_url or use new_page_in_container; list_containers shows the names.`,
+    "- Each tab-open prints which rule chose the container. If it says the session default and the task belongs elsewhere, close that tab and reopen it with container.",
+  ].join("\n");
 }
 
 export interface ServerIdentity {
@@ -357,10 +403,14 @@ async function resolveScopeOnce(
   if (scope.current) return scope.current;
   if (!scope.requestedName) return null;
   if (!scope.resolving) {
-    scope.resolving = resolveScopeContainer(daemon, scope.requestedName).then((container) => {
-      scope.current = container;
-      scope.requestedName = null;
-      scope.resolving = undefined;
+    const name = scope.requestedName;
+    scope.resolving = resolveScopeContainer(daemon, name).then((container) => {
+      // A table reload can re-derive the default while this is in flight; keep the newer one.
+      if (scope.requestedName === name) {
+        scope.current = container;
+        scope.requestedName = null;
+        scope.resolving = undefined;
+      }
       return container;
     });
   }
@@ -385,6 +435,8 @@ interface ContainerDecision {
   warning?: string;
   /** Identity the config expects to be signed in here. Advisory - see accountNote. */
   expectedAccount?: string;
+  /** Set when no host rule decided: a nudge to override when the task says otherwise. */
+  hint?: string;
 }
 
 function decisionLine(decision: ContainerDecision): string {
@@ -720,12 +772,27 @@ export function registerTools(
         `Nothing was opened. Consoles route by which container's identifying string appears in the URL. Pass container explicitly to override, or add the missing domain/alias to a container in ${routes.path} and reload with container_routes.`,
       );
     }
-    const scoped = await resolveScopeOnce(daemon, scope);
+    let scoped: FirefoxContainer | null;
+    const pendingName = scope.requestedName;
+    try {
+      scoped = await resolveScopeOnce(daemon, scope);
+    } catch (err) {
+      // A "projects" typo must fail as loudly as a host-rule typo: this is the jar every
+      // unrouted URL in the session would have landed in.
+      const detail = err instanceof ZenToolError ? err.hint : undefined;
+      throw new ZenToolError(
+        "BAD_INPUT",
+        `the session default (from ${scope.source ?? "the session"}) names container "${pendingName}", which does not exist in this Zen`,
+        `${detail ?? ""} Nothing was opened. Fix the name in ${routes.path} and reload with container_routes, or pass container explicitly.`.trim(),
+      );
+    }
+    const hint = fallbackHint(url, scoped);
     if (scoped) {
       const decision: ContainerDecision = {
         container: scoped,
-        reason: "the session default container",
+        reason: `the session default container${scope.source ? `, from ${scope.source}` : ""}`,
         routed: false,
+        hint,
       };
       const account = accountForContainer(routes, scoped.name);
       if (account) decision.expectedAccount = account;
@@ -740,10 +807,22 @@ export function registerTools(
           ? "no host rule matched this URL and no session default container is set"
           : "no host rules are configured and no session default container is set",
       routed: false,
+      hint,
     };
     const broken = brokenTableWarning();
     if (broken) decision.warning = broken;
     return decision;
+  }
+
+  /**
+   * The table could not decide, so the jar is only as right as the session's default. Say
+   * so where the agent reads it: the agent knows which project the task is for, and this
+   * process does not.
+   */
+  function fallbackHint(url: string, fallback: FirefoxContainer | null): string {
+    const host = parseUrlTarget(url)?.host ?? url;
+    const jar = fallback ? fallback.name : "no container";
+    return `no host rule covers ${host}, so this used ${jar}. If the task is for a different project or client, close it and reopen with container=<name> (list_containers).`;
   }
 
   /**
@@ -794,6 +873,7 @@ export function registerTools(
         if (reload) {
           routes = reloadRouteTable();
           containerByName.clear();
+          applySessionDefault(scope, routes, process.cwd());
         }
         const lines = [describeRouteTable(routes)];
         if (url) {
@@ -834,7 +914,7 @@ export function registerTools(
               lines.push(
                 `${url} -> no matching rule; falls back to ${
                   sessionDefault
-                    ? `the session default container "${sessionDefault}"`
+                    ? `the session default container "${sessionDefault}"${scope.source ? ` (from ${scope.source})` : ""}`
                     : "no container (Firefox default cookie jar)"
                 }`,
               );
@@ -853,7 +933,7 @@ export function registerTools(
     {
       title: "Set default container",
       description:
-        "Set the default Firefox container for future new_page calls in this MCP session. Existing tabs are not moved.",
+        "Set this MCP session's default Firefox container: the jar new_page and open_url use when no host rule matches. Outranks the project-directory default and --container for the rest of the session. Existing tabs are not moved.",
       inputSchema: {
         name: z.string().describe("Exact Firefox container name"),
       },
@@ -862,6 +942,9 @@ export function registerTools(
       try {
         scope.current = await resolveScopeContainer(daemon, name);
         scope.requestedName = null;
+        scope.resolving = undefined;
+        scope.pinned = true;
+        scope.source = "set_default_container";
         return ok(
           `default container set to "${scope.current.name}" (${scope.current.cookieStoreId})`,
         );
@@ -905,7 +988,7 @@ export function registerTools(
     {
       title: "New page",
       description:
-        "Open a new tab at URL, always a new one. Prefer open_url, which reuses the tab already on that host instead of stacking duplicates. Container is chosen the same way in both: a matching rule from the container route table wins, otherwise the session default (--container or set_default_container). Errors without opening anything if the URL is on a configured console host (a shared multi-project host) but names no container - see container_routes. Opens in the background by default (does not steal focus); pass active=true to foreground it.",
+        "Open a new tab at URL, always a new one. Prefer open_url, which reuses the tab already on that host instead of stacking duplicates. Container is chosen the same way in both: a matching rule from the container route table wins, otherwise the session default (set_default_container, else the container of the project directory this session runs in, else --container). Errors without opening anything if the URL is on a configured console host (a shared multi-project host) but names no container - see container_routes. Opens in the background by default (does not steal focus); pass active=true to foreground it.",
       inputSchema: {
         url: z.string().describe("Target URL"),
         active: z
@@ -926,6 +1009,7 @@ export function registerTools(
         // The tab reports about:blank until the load commits; report what it was asked for.
         const lines = [`new page tabId=${r.tabId} -> ${url} (${cn})`, decisionLine(decision)];
         if (decision.warning) lines.push(decision.warning);
+        if (decision.hint) lines.push(decision.hint);
         return withNavMeta(ok(lines.join("\n")), { url, navigated: true });
       } catch (err) {
         return fail(err);
@@ -945,7 +1029,7 @@ export function registerTools(
           .string()
           .optional()
           .describe(
-            "Exact container name, overriding both the route table and the session default. Use only to deliberately break the routing.",
+            "Exact container name, overriding both the route table and the session default. Pass it when the task belongs to a different project or client than the jar this URL would otherwise get - typically a shared site (Google Docs, Gmail, Stripe) the route table cannot route. Leave it out for hosts the table routes.",
           ),
         reuse: z
           .enum(["host", "exact", "never"])
@@ -969,6 +1053,7 @@ export function registerTools(
         const account = accountNote(decision);
         if (account) tail.push(account);
         if (decision.warning) tail.push(decision.warning);
+        if (decision.hint) tail.push(decision.hint);
 
         if (mode !== "never" && target) {
           const inContainer = (await listPages(daemon, true)).filter(
@@ -2606,7 +2691,7 @@ export function registerTools(
         const lines = [
           `mcp.server: ${identity.name} ${identity.version}`,
           `mcp.daemonUrl: ${identity.daemonUrl}`,
-          `mcp.scope: ${scope.current ? `${scope.current.name} (${scope.current.cookieStoreId})` : scope.requestedName ? `${scope.requestedName} (pending resolution)` : "(none)"}`,
+          `mcp.scope: ${scope.current ? `${scope.current.name} (${scope.current.cookieStoreId})` : scope.requestedName ? `${scope.requestedName} (pending resolution)` : "(none)"}${scope.source ? ` from ${scope.source}` : ""}`,
           `mcp.containerRoutes: ${routeSummaryLine(routes)}`,
           `extension.id: ${r.extensionId}`,
           `extension.version: ${r.extensionVersion}`,

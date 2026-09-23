@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 
 // Host -> container routing. The table answers "which Firefox container owns this domain?"
 // so a URL lands in the same cookie jar no matter which zen-* MCP entry issued the call.
@@ -23,6 +23,13 @@ import { join } from "node:path";
 //     routinely holds several signed-in accounts and the host is what picks between them.
 //     ADVISORY and printed, never enforced: this decides the cookie jar, but nothing here
 //     can see which row gets clicked on a provider's account chooser.
+//
+//   "projects"  - container -> directories. A session whose working directory is at or
+//     under one defaults to that container, outranking --container (which becomes the
+//     fallback for sessions started anywhere else). This is what the retired per-container
+//     zen-* entries used to provide: a client session's Google Doc lands in that client's jar
+//     without the agent naming it. Host rules still outrank it, and the most specific
+//     directory wins. Home and / are refused - --container is the catch-all layer.
 //
 // Accounts live in their own top-level section, and a container's account is an extra key
 // on its object, for one reason: EVERY FORM IN THIS FILE MUST BE IGNORABLE BY AN OLDER
@@ -70,6 +77,23 @@ export interface ContainerDef {
   account: string | null;
 }
 
+/** One "projects" entry: sessions started in or under `dir` default to `container`. */
+export interface ProjectRule {
+  container: string;
+  /** Directory exactly as written in the config, for display. */
+  pattern: string;
+  /** Absolute, with symlinks and letter case resolved when the directory exists. */
+  dir: string;
+  /** Not found when the table loaded, so it can never match. Reported, not fatal. */
+  missing: boolean;
+}
+
+export interface ProjectMatch {
+  container: string;
+  /** The rule's resolved directory. */
+  dir: string;
+}
+
 export interface RouteTable {
   /** Config path consulted, whether or not it exists. */
   path: string;
@@ -82,6 +106,8 @@ export interface RouteTable {
   consoles: CompiledConsole[];
   /** The "containers" section as written; empty for legacy route-only files. */
   containerDefs: ContainerDef[];
+  /** The "projects" section: working directory -> session default container. */
+  projects: ProjectRule[];
   /** Load or parse failure, kept so the state is reportable instead of silently empty. */
   error: string | null;
 }
@@ -160,6 +186,7 @@ function readRouteTable(): RouteTable {
     rules: [],
     consoles: [],
     containerDefs: [],
+    projects: [],
     error: null,
   };
   if (!enabled) return empty;
@@ -238,6 +265,7 @@ interface CompiledSections {
   rules: CompiledRule[];
   consoles: CompiledConsole[];
   containerDefs: ContainerDef[];
+  projects: ProjectRule[];
 }
 
 function compileTable(parsed: unknown): CompiledSections {
@@ -248,7 +276,11 @@ function compileTable(parsed: unknown): CompiledSections {
   // Structured shape: any of "routes", "containers", "consoles" at the top level. A bare
   // { "Container": [patterns] } object still works too, for a minimal hand-written file.
   const structured =
-    "routes" in record || "containers" in record || "consoles" in record || "accounts" in record;
+    "routes" in record ||
+    "containers" in record ||
+    "consoles" in record ||
+    "accounts" in record ||
+    "projects" in record;
 
   const rules: CompiledRule[] = [];
   const push = (rule: CompiledRule) => {
@@ -315,7 +347,96 @@ function compileTable(parsed: unknown): CompiledSections {
     }
   }
 
-  return { rules, consoles, containerDefs };
+  const projects = structured ? compileProjects(record.projects) : [];
+  return { rules, consoles, containerDefs, projects };
+}
+
+/** "projects": { "Example Co": ["~/Projects/example-co", "~/clients"] } -> resolved rules. */
+function compileProjects(source: unknown): ProjectRule[] {
+  if (source === undefined) return [];
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new Error('"projects" must be an object mapping a container name to its directories');
+  }
+  const rules: ProjectRule[] = [];
+  const owner = new Map<string, string>();
+  for (const [name, value] of Object.entries(source as Record<string, unknown>)) {
+    const container = name.trim();
+    if (container.length === 0) throw new Error('"projects" container names cannot be empty');
+    const patterns = typeof value === "string" ? [value] : value;
+    if (!Array.isArray(patterns)) {
+      throw new Error(`"projects"."${container}" must be a directory or an array of directories`);
+    }
+    for (const item of patterns) {
+      if (typeof item !== "string") {
+        throw new Error(`"projects"."${container}" entries must be strings`);
+      }
+      const { dir, missing } = resolveProjectDir(item, container);
+      const prior = owner.get(dir);
+      if (prior !== undefined && prior !== container) {
+        throw new Error(`"projects" lists ${item.trim()} under both "${prior}" and "${container}"`);
+      }
+      owner.set(dir, container);
+      rules.push({ container, pattern: item.trim(), dir, missing });
+    }
+  }
+  return rules;
+}
+
+function resolveProjectDir(pattern: string, container: string): { dir: string; missing: boolean } {
+  const trimmed = pattern.trim();
+  const where = `"projects"."${container}"`;
+  if (trimmed.length === 0) throw new Error(`${where} has an empty directory`);
+  let abs: string;
+  if (trimmed === "~" || trimmed.startsWith("~/")) {
+    abs = join(homedir(), trimmed.slice(1));
+  } else if (isAbsolute(trimmed)) {
+    abs = trimmed;
+  } else {
+    throw new Error(`${where}: "${trimmed}" must be absolute or start with ~/`);
+  }
+  abs = resolvePath(abs);
+  const dir = canonicalDir(abs) ?? abs;
+  // Every session sits under one of these, so a rule here would silently override
+  // --container everywhere. The flag is the catch-all layer; keep it the only one.
+  if (dir === resolvePath(homedir()) || dir === canonicalDir(homedir()) || dir === sep) {
+    throw new Error(`${where}: "${trimmed}" covers every session - use --container for a catch-all`);
+  }
+  return { dir, missing: canonicalDir(abs) === null };
+}
+
+/**
+ * Symlinks and letter case resolved. realpath's native form is the one that fixes case on
+ * macOS: a session started in ~/projects/x must match a rule written as ~/Projects/x.
+ */
+function canonicalDir(path: string): string | null {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The session default a working directory implies: the most specific "projects" directory
+ * at or above it. Matching is on whole path segments, so ~/Projects/example never
+ * claims ~/Projects/example-old.
+ */
+export function matchProjectDir(table: RouteTable, cwd: string): ProjectMatch | null {
+  if (!table.enabled || table.projects.length === 0) return null;
+  const here = canonicalDir(cwd) ?? resolvePath(cwd);
+  let best: ProjectRule | null = null;
+  for (const rule of table.projects) {
+    if (rule.missing) continue;
+    const under = here === rule.dir || here.startsWith(rule.dir.endsWith(sep) ? rule.dir : rule.dir + sep);
+    if (under && (!best || rule.dir.length > best.dir.length)) best = rule;
+  }
+  return best ? { container: best.container, dir: best.dir } : null;
+}
+
+/** ~/x for display; the full path anywhere else. */
+export function displayPath(path: string): string {
+  const home = canonicalDir(homedir()) ?? resolvePath(homedir());
+  return path === home ? "~" : path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
 }
 
 function routePairs(source: unknown): Array<{ container: string; patterns: string[] }> {
@@ -618,13 +739,17 @@ export function routeSummaryLine(table: RouteTable): string {
     table.consoles.length > 0
       ? `, ${table.consoles.length} console host${table.consoles.length === 1 ? "" : "s"}`
       : "";
-  return `${table.rules.length} rule${table.rules.length === 1 ? "" : "s"}${consoles} from ${table.path}`;
+  const projects =
+    table.projects.length > 0
+      ? `, ${table.projects.length} project director${table.projects.length === 1 ? "y" : "ies"}`
+      : "";
+  return `${table.rules.length} rule${table.rules.length === 1 ? "" : "s"}${consoles}${projects} from ${table.path}`;
 }
 
 /** Full table for the container_routes tool. */
 export function describeRouteTable(table: RouteTable): string {
   const lines = [`routes: ${routeSummaryLine(table)}`];
-  if (table.rules.length === 0) {
+  if (table.rules.length === 0 && table.projects.length === 0) {
     lines.push(
       "",
       "No host is mapped to a container, so new tabs fall back to the session default",
@@ -679,6 +804,20 @@ export function describeRouteTable(table: RouteTable): string {
     for (const [container, patterns] of byContainer) {
       lines.push(`- ${container}: ${patterns.join(", ")}`);
     }
+  }
+
+  if (table.projects.length > 0) {
+    lines.push(
+      "",
+      "projects (session default by working directory; host rules still win, most specific directory wins):",
+    );
+    const byContainer = new Map<string, string[]>();
+    for (const rule of table.projects) {
+      const list = byContainer.get(rule.container) ?? [];
+      list.push(rule.missing ? `${rule.pattern} [missing - never matches]` : rule.pattern);
+      byContainer.set(rule.container, list);
+    }
+    for (const [container, dirs] of byContainer) lines.push(`- ${container}: ${dirs.join(", ")}`);
   }
   return lines.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n");
 }

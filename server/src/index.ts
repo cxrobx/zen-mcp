@@ -4,8 +4,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { readFileSync } from "node:fs";
 import { parseArgs } from "./cli.js";
 import { DaemonClient, RpcError } from "./daemon-client.js";
-import { type ScopeRef, registerTools } from "./tools.js";
+import { type ScopeRef, applySessionDefault, containerInstructions, registerTools } from "./tools.js";
 import { NavContext } from "./nav-memory.js";
+import { loadRouteTable } from "./routes.js";
 
 const SERVER_NAME = "zen-ext-mcp";
 const SERVER_VERSION = "0.0.4";
@@ -49,20 +50,26 @@ async function main(): Promise<void> {
   const token = readToken(opts.tokenPath);
   const url = `ws://${opts.host}:${opts.port}`;
 
+  // The working directory is the session's: a project directory in the route table picks
+  // the default container, and --container covers every session started anywhere else.
+  const scope: ScopeRef = { current: null, requestedName: null, flagName: opts.container };
+  applySessionDefault(scope, loadRouteTable(), process.cwd());
+
   const daemon = new DaemonClient({
     url,
     token,
-    containerScope: opts.container,
+    containerScope: scope.requestedName ?? null,
   });
   await connectWithRetry(daemon, url);
-  logStderr("connected to daemon", { url, container: opts.container });
-
-  const scope: ScopeRef = { current: null, requestedName: opts.container };
-  if (opts.container) {
-    logStderr("container scope deferred", { name: opts.container });
+  logStderr("connected to daemon", { url, container: scope.requestedName ?? null });
+  if (scope.requestedName) {
+    logStderr("container scope deferred", { name: scope.requestedName, source: scope.source });
   }
 
-  const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+  const server = new McpServer(
+    { name: SERVER_NAME, version: SERVER_VERSION },
+    { instructions: containerInstructions(scope) },
+  );
   const nav = new NavContext(daemon, process.env.ZEN_MCP_NAV_MEMORY !== "0");
   registerTools(server, daemon, scope, {
     name: SERVER_NAME,

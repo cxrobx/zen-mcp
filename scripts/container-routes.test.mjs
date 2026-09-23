@@ -7,7 +7,8 @@
 // loudly rather than quietly land a session in the wrong cookie jar.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -19,6 +20,7 @@ import {
   accountForContainer,
   describeRouteTable,
   matchContainerRoute,
+  matchProjectDir,
   reloadRouteTable,
   unmatchedConsoleClaim,
 } from "../server/dist/routes.js";
@@ -265,25 +267,26 @@ let mcp;
 let mcpScoped;
 let mcpConsole;
 
-async function startServer(tokenPath, extraArgs, env) {
+async function startServer(tokenPath, extraArgs, env, cwd) {
   const child = spawn(
     "node",
     [resolve(root, "server/dist/index.js"), "--port", String(PORT), "--token-file", tokenPath, ...extraArgs],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ZEN_MCP_NAV_MEMORY: "0", ...env },
+      ...(cwd ? { cwd } : {}),
     },
   );
   child.stderr.resume();
   await sleep(400);
   const client = new McpClient(child);
-  await client.send("initialize", {
+  const init = await client.send("initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
     clientInfo: { name: "container-routes-test", version: "0.0.1" },
   });
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-  return { child, client };
+  return { child, client, instructions: init.result?.instructions ?? "" };
 }
 
 before(async () => {
@@ -1127,4 +1130,159 @@ test("get_firefox_info reports the route table state", async () => {
   const { isError, text } = await mcp.callTool("get_firefox_info");
   assert.equal(isError, false, text);
   assert.match(text, /mcp\.containerRoutes: 5 rules from /);
+});
+
+// --- projects: the working directory picks the session default -----------------------------
+// What the retired per-container zen-* entries gave for free: an agent working in a client's
+// directory got that client's jar for every URL the table does not route (Google Docs, Gmail,
+// Stripe). With one registration for every session, the directory has to carry that signal.
+
+async function projectTree() {
+  const base = join(dir, "projects-tree");
+  const paths = {
+    acme: join(base, "work", "acme"),
+    acmeSub: join(base, "work", "acme", "src", "deep"),
+    client: join(base, "work", "acme", "client"),
+    clientSub: join(base, "work", "acme", "client", "notes"),
+    lookalike: join(base, "work", "acme-old"),
+    outside: join(base, "elsewhere"),
+    link: join(base, "link-to-acme"),
+  };
+  for (const key of ["acmeSub", "clientSub", "lookalike", "outside"]) {
+    await mkdir(paths[key], { recursive: true });
+  }
+  if (!existsSync(paths.link)) await symlink(paths.acme, paths.link);
+  return paths;
+}
+
+async function startProjectServer(t, cwd, table, extraArgs = ["--container", "Personal"]) {
+  const file = join(dir, `projects-${Math.random().toString(36).slice(2)}.json`);
+  await writeFile(file, JSON.stringify(table), "utf8");
+  const started = await startServer(join(dir, "auth.token"), extraArgs, { ZEN_MCP_ROUTES: file }, cwd);
+  t.after(() => started.child.kill("SIGTERM"));
+  return started;
+}
+
+test("a project directory covers itself and everything under it; the most specific wins", async (t) => {
+  const p = await projectTree();
+  const table = await withTable(t, "projects-match.json", {
+    projects: { CXVentures: [p.acme], "Artist Advisory": p.client },
+  });
+  assert.equal(table.loaded, true, table.error ?? "");
+  assert.equal(matchProjectDir(table, p.acme)?.container, "CXVentures");
+  assert.equal(matchProjectDir(table, p.acmeSub)?.container, "CXVentures");
+  assert.equal(matchProjectDir(table, p.client)?.container, "Artist Advisory");
+  assert.equal(matchProjectDir(table, p.clientSub)?.container, "Artist Advisory");
+  // Whole path segments only: acme must not claim acme-old.
+  assert.equal(matchProjectDir(table, p.lookalike), null);
+  assert.equal(matchProjectDir(table, p.outside), null);
+  // A symlinked path resolves to its target. (tmpdir itself is a symlink on macOS, so the
+  // lines above already exercise that on the rule side.)
+  assert.equal(matchProjectDir(table, p.link)?.container, "CXVentures");
+  // A case-insensitive filesystem reaches the same directory under another spelling, and a
+  // session started in ~/projects/x must still match a rule written as ~/Projects/x.
+  const shouted = p.acme.replace(/acme$/, "ACME");
+  if (existsSync(shouted)) assert.equal(matchProjectDir(table, shouted)?.container, "CXVentures");
+});
+
+test("projects misconfigurations are refused loudly; a missing directory is reported, not fatal", async (t) => {
+  const p = await projectTree();
+  const cases = [
+    [{ projects: { CXVentures: ["relative/path"] } }, /must be absolute or start with ~\//],
+    [{ projects: { CXVentures: ["~"] } }, /covers every session/],
+    [{ projects: { CXVentures: ["/"] } }, /covers every session/],
+    [{ projects: { CXVentures: [p.acme], Geek: [p.acme] } }, /under both "CXVentures" and "Geek"/],
+    [{ projects: { CXVentures: [42] } }, /entries must be strings/],
+    [{ projects: ["nope"] }, /"projects" must be an object/],
+  ];
+  for (const [config, expected] of cases) {
+    const table = await withTable(t, `bad-projects-${Math.random().toString(36).slice(2)}.json`, config);
+    assert.equal(table.loaded, false, `expected refusal for ${JSON.stringify(config)}`);
+    assert.match(table.error ?? "", expected);
+  }
+
+  // One stale directory must not disarm every other rule in the file.
+  const gone = join(dir, "projects-tree", "deleted-project");
+  const table = await withTable(t, "projects-missing.json", {
+    routes: { CXVentures: ["cxventures.io"] },
+    projects: { CXVentures: [p.acme, gone] },
+  });
+  assert.equal(table.loaded, true, table.error ?? "");
+  assert.equal(matchProjectDir(table, gone), null);
+  assert.match(describeRouteTable(table), /deleted-project \[missing - never matches\]/);
+});
+
+test("a session started in a project directory defaults to that project's container", async (t) => {
+  const p = await projectTree();
+  const { client, instructions } = await startProjectServer(t, p.clientSub, {
+    routes: { Buildersbuddy: ["buildersbuddy.org"] },
+    projects: { "Artist Advisory": [p.client] },
+  });
+  ext.reset();
+
+  // A shared site the table cannot route lands in the project's jar - and says why.
+  const shared = await client.callTool("open_url", { url: "https://docs.example/d/1" });
+  assert.equal(shared.isError, false, shared.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-8");
+  assert.match(shared.text, /via the session default container, from the project directory .*client/);
+  // The agent knows which project the task is for and this process does not: tell it.
+  assert.match(shared.text, /no host rule covers docs\.example/);
+  assert.match(shared.text, /reopen with container=/);
+
+  // A host rule still outranks the directory.
+  const routed = await client.callTool("open_url", { url: "https://buildersbuddy.org/deals" });
+  assert.equal(routed.isError, false, routed.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-7");
+  assert.doesNotMatch(routed.text, /no host rule covers/);
+
+  // The agent is told the default, and where it came from, before its first call.
+  assert.match(instructions, /default container, Artist Advisory \(from the project directory/);
+  assert.match(instructions, /pass container to open_url/);
+
+  const info = await client.callTool("get_firefox_info");
+  assert.match(info.text, /mcp\.scope: Artist Advisory .*from the project directory/);
+});
+
+test("outside every project directory, --container is the fallback", async (t) => {
+  const p = await projectTree();
+  const { client, instructions } = await startProjectServer(t, p.outside, {
+    projects: { "Artist Advisory": [p.client] },
+  });
+  ext.reset();
+  const r = await client.callTool("open_url", { url: "https://docs.example/d/2" });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-1");
+  assert.match(r.text, /via the session default container, from the --container flag/);
+  assert.match(instructions, /default container, Personal \(from the --container flag\)/);
+});
+
+test("set_default_container outranks the project directory and survives a table reload", async (t) => {
+  const p = await projectTree();
+  const { client } = await startProjectServer(t, p.client, {
+    projects: { "Artist Advisory": [p.client] },
+  });
+  ext.reset();
+  const set = await client.callTool("set_default_container", { name: "CXVentures" });
+  assert.equal(set.isError, false, set.text);
+  const reload = await client.callTool("container_routes", { reload: true });
+  assert.equal(reload.isError, false, reload.text);
+
+  const r = await client.callTool("open_url", { url: "https://docs.example/d/3" });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(ext.requestsFor("pages.new").at(-1).params.cookieStoreId, "firefox-container-9");
+  assert.match(r.text, /from set_default_container/);
+});
+
+test("a project rule naming a container that does not exist fails loudly and opens nothing", async (t) => {
+  const p = await projectTree();
+  const { client } = await startProjectServer(t, p.acme, {
+    projects: { "Ghost Container": [p.acme] },
+  });
+  ext.reset();
+  const { isError, text } = await client.callTool("open_url", { url: "https://docs.example/d/4" });
+  assert.equal(isError, true, "a typo in projects must not silently fall back to another jar");
+  assert.match(text, /Ghost Container/);
+  assert.match(text, /does not exist/);
+  assert.match(text, /from the project directory/);
+  assert.equal(ext.requestsFor("pages.new").length, 0, "nothing may be opened");
 });

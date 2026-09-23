@@ -120,6 +120,22 @@ Because the query is where consoles actually put the property, **the URL's own t
 
 The older `{ "routes": { "Container": ["host", ...] } }` shape still works, alone or alongside the sections above.
 
+**`projects`** picks the session default from the directory the Claude session runs in. Host rules can only route hosts that name a project; a Google Doc, a Gmail thread or a Stripe page looks the same whichever client it belongs to. So a session started in or under a listed directory defaults to that container for every URL no host rule covers:
+
+```json
+{
+  "containers": { "Example Co": ["example.com"] },
+  "projects": {
+    "Example Co": ["~/Projects/example-co", "~/clients"],
+    "Side Project": ["~/Projects/side-project"]
+  }
+}
+```
+
+The most specific directory wins (`~/clients/acme` can map elsewhere than `~/clients`), matching is on whole path segments, and symlinks and letter case are resolved first, so `~/projects/x` matches a rule written as `~/Projects/x`. It outranks `--container`, which becomes the fallback for sessions started anywhere else, so one user-scope registration serves every project. `~` and `/` are refused: `--container` is the catch-all layer. A directory that doesn't exist is reported by `container_routes` and never matches, rather than failing the file. A rule naming a container that doesn't exist errors and opens nothing, like a host rule would. The directory is read when the server starts and again on `container_routes({ reload: true })`.
+
+The agent is told this at session start (the server's MCP instructions name the default and where it came from), and every call that falls back to the session default says so and suggests reopening with `container` when the task belongs to a different project. The server knows the directory; only the agent knows which client the task is for.
+
 Matching: a rule matches its host **and its subdomains** (`cxventures.io` covers `qes.cxventures.io`); `*.example.com` matches subdomains only; `localhost:3000` pins a port. The most specific matching rule wins — console rule (host + identifying string) over any host-only rule, exact host over parent domain, port-pinned over port-agnostic.
 
 ### fill_secret: Keychain secrets without transcript exposure
@@ -138,7 +154,7 @@ A secret may only be filled into a host it is **explicitly bound to**, in `$XDG_
 
 Host match is **exact** (binding `example.com` does not cover `login.example.com` — list both if both are real fill targets), and an unbound host is an **error, never a fallback**: the binding is what stops a misread page or a prompt-injected session from steering a credential into a lookalike form, the same way a password manager binds credentials to origins. A malformed config is a reported error, never treated as empty. First use per server binary may pop a macOS Keychain access dialog — approve it once; a `TIMEOUT` error from this tool usually means that dialog is waiting on screen.
 
-Precedence, highest first: **explicit argument** (`new_page_in_container`, `open_url({ container })`) → **host rule** → **session default** (`--container` / `set_default_container`) → no container. A host rule outranking the session default is what makes a project's URL land in that project's jar from any `zen-*` entry. Every tab-opening call prints the decision and its source, so routing is never invisible:
+Precedence, highest first: **explicit argument** (`new_page_in_container`, `open_url({ container })`) → **host rule** → **session default** (`set_default_container`, else the `projects` directory, else `--container`) → no container. A host rule outranking the session default is what makes a project's URL land in that project's jar from any `zen-*` entry. Every tab-opening call prints the decision and its source, so routing is never invisible:
 
 ```
 new page tabId=1226 -> https://artistadvisory.io/artists (Artist Advisory)
@@ -314,7 +330,7 @@ A container name containing a space must be quoted as one argument: `--container
 
 `--container <name>` resolves lazily on first new-tab use: 0 matches errors with the available list; >1 matches errors with the matching list.
 
-When `--container` is set, it is the **fallback** for URLs no host rule claims — see [Container routing](#container-routing-let-the-domain-pick-the-container), which outranks it. `new_page_in_container` always takes an explicit name and wins over both. `set_default_container` updates the fallback at runtime for that MCP entry. Both new-tab tools open in the background by default; pass `active: true` to foreground the tab.
+When `--container` is set, it is the **fallback** for URLs no host rule claims, and for sessions outside every `projects` directory — see [Container routing](#container-routing-let-the-domain-pick-the-container), which outranks it. With `projects` configured, one user-scope entry with `--container Personal` does what the per-container entries above used to, without registering every tool once per container. `new_page_in_container` always takes an explicit name and wins over both. `set_default_container` updates the fallback at runtime for that session and outranks the directory. Both new-tab tools open in the background by default; pass `active: true` to foreground the tab.
 
 ## Architecture
 
