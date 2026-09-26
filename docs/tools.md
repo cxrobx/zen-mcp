@@ -45,6 +45,24 @@ A secret may only be filled into a host it is **explicitly bound to**, in `$XDG_
 
 Host match is **exact** (binding `example.com` does not cover `login.example.com` — list both if both are real fill targets), and an unbound host is an **error, never a fallback**: the binding is what stops a misread page or a prompt-injected session from steering a credential into a lookalike form, the same way a password manager binds credentials to origins. A malformed config is a reported error, never treated as empty. First use per server binary may pop a macOS Keychain access dialog — approve it once; a `TIMEOUT` error from this tool usually means that dialog is waiting on screen.
 
+## Credential masking: no tool returns a key
+
+A page can show a key truncated (`sk_test_51…Wx`) while the element's accessible name, text or an input's value holds all of it. Stripe's API-keys page does, and in September 2026 its full secret key came back through `take_snapshot` and through the `active=` line after a click. So every tool's text is masked on its way out of the server: a credential-shaped string keeps its prefix and last four characters, e.g. `sk_test_…9x4Q`. That covers snapshots, `active=`, page text, `read_page`, `evaluate_script` results and error messages. Masked shapes:
+
+| Shape | Masked as |
+|---|---|
+| Stripe secret/restricted keys `sk_`/`rk_` + `live`/`test`, webhook secrets `whsec_` | `sk_live_…abcd` |
+| GitHub `ghp_` `gho_` `ghu_` `ghs_` `ghr_` `github_pat_`, Slack `xoxa-`/`xoxb-`/`xoxp-`/`xoxr-`, AWS `AKIA…` | prefix + `…` + last 4 |
+| PEM private-key blocks | `-----BEGIN … PRIVATE KEY-----…[redacted]…` |
+| A 32+ character letters-and-digits run within 40 characters after `secret`, `token` or `key` on the same line | `…abcd` |
+| A key split across elements (a bare prefix, then its body in the next node) | the body becomes `…abcd` |
+
+Publishable keys (`pk_live_`/`pk_test_`) are public and are left as they are. Read_page's Markdown escapes underscores (`sk\_live\_`), and the patterns allow for that. The masker is `shared/src/credential-redact.ts`, applied by `redactResponse` in `server/src/tools.ts` and, before a budget split, in `withResponseBudget`.
+
+`screenshot_page` can't be masked after the fact, so since extension 0.0.22 it masks the **page**: an isolated-world script (`extension/src/mask/inject.ts`) rewrites matching text nodes and input values in every frame, blurs a key split across elements, captures, then puts every node back. The result line says how many strings it masked. If the mask pass fails on a web page, the screenshot is refused and nothing is captured. A page that can't be scripted (`about:`, the PDF viewer) is captured unmasked, and the result says so. An older extension still captures, with a warning in the result.
+
+What masking can't catch: a key drawn in a `<canvas>` or an image, a key inside a closed shadow root, a key in an unfamiliar format that isn't next to the word secret, token or key, and a PDF.
+
 ## interactive_elements and navigate_goal
 
 `interactive_elements` lists a tab's controls one per line (UID, kind, label, link destination, row and region) from a fresh snapshot, so the UIDs work with `click_by_uid`. It is roughly 6× smaller than `take_snapshot` (measured on Search Console: 2,909 vs 18,764 characters). Row context tells same-label controls apart, and field values are never shown.
@@ -66,7 +84,7 @@ Tools the Marionette-based predecessor had that have **no WebExtension equivalen
 Deferred to v2 (need degraded-fidelity content-script bridges): `list_console_messages`, `clear_console_messages`, `list_network_requests`, `get_network_request`, `accept_dialog`, `dismiss_dialog`, `screenshot_by_uid`, full-page screenshot.
 
 Fidelity gaps to know:
-- `screenshot_page` captures the target tab's visible viewport in place via `tabs.captureTab(tabId)` — it does **not** activate the tab or change window focus. It defaults to JPEG quality 80; pass `format: "png"` for lossless output.
+- `screenshot_page` captures the target tab's visible viewport in place via `tabs.captureTab(tabId)` — it does **not** activate the tab or change window focus. It defaults to JPEG quality 80; pass `format: "png"` for lossless output. Credential-shaped text is masked in the page for the capture (see *Credential masking* above).
 - `evaluate_script` requires JSON-serializable results (the `scripting.executeScript` constraint). Returning DOM nodes or non-serializable objects fails. The function body is transpiled and interpreted without `eval()`/`Function()`, so page CSP does not block it.
 - Large textual responses from `take_snapshot`, `evaluate_script`, `get_page_text`, `read_page`, `get_cookies`, and `get_storage` honor `maxBytes` + `cursor`; `interactive_elements` honors `maxBytes`.
 - Locator actions (`click`, `hover`, `fill`, `type`, `drag`, `select_option`, `press_key`) auto-wait for matches with `timeoutMs` and scroll targets into view before acting.

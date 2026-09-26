@@ -17,6 +17,7 @@ await build({
     join(srcDir, "options/options.ts"),
     join(srcDir, "snapshot/inject.ts"),
     join(srcDir, "readability/inject.ts"),
+    join(srcDir, "mask/inject.ts"),
   ],
   outdir: outDir,
   bundle: true,

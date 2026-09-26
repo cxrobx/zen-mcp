@@ -1,4 +1,5 @@
 import type { SnapshotNode, SnapshotUidEntry } from "@zen-mcp/shared";
+import { maskCredentials } from "@zen-mcp/shared/credential-redact";
 
 /**
  * The actionable subset of a DOM snapshot, one line per element.
@@ -111,8 +112,10 @@ export interface CollectOptions {
   pageUrl?: string;
 }
 
+// Masked before clipping for the real last four; this collection also feeds navigate_goal,
+// whose payload leaves the machine.
 function clean(value: string | undefined): string {
-  return value ? value.replace(/\s+/g, " ").trim() : "";
+  return value ? maskCredentials(value).replace(/\s+/g, " ").trim() : "";
 }
 
 function clip(value: string, max: number): string {

@@ -230,6 +230,11 @@ export interface ScreenshotPageParams {
 export interface ScreenshotPageResult {
   tabId: number;
   dataUrl: string;
+  /** Credential-shaped strings masked in the page for the capture. Absent from extensions
+   *  older than 0.0.22, which captured the page as-is. */
+  masked?: number;
+  /** Set when the page could not be scripted (about:, PDF viewer) and was captured unmasked. */
+  maskSkipped?: string;
 }
 
 export interface GetPageTextParams {

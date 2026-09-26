@@ -1,8 +1,12 @@
 import type { InteractionResult } from "@zen-mcp/shared";
+import { maskCredentials } from "@zen-mcp/shared/credential-redact";
 
+// Masks before cutting, so a key keeps its real last four instead of the four characters that
+// happened to sit at the cut. The response-level mask in tools.ts would still catch the cut
+// version; this only makes the visible tail the true one.
 export function truncateOneLine(value: string | undefined, maxLen: number): string {
   if (!value) return "";
-  const oneLine = value.replace(/\s+/g, " ").trim();
+  const oneLine = maskCredentials(value).replace(/\s+/g, " ").trim();
   if (oneLine.length <= maxLen) return oneLine;
   return oneLine.slice(0, maxLen - 3) + "...";
 }

@@ -1,3 +1,4 @@
+import { maskCredentials } from "@zen-mcp/shared/credential-redact";
 import { ZenToolError } from "./errors.js";
 
 export const DEFAULT_RESPONSE_BUDGET = 25_000;
@@ -56,7 +57,10 @@ export function continueCursor(cursor: string, maxBytes?: number): BudgetedResul
   return entry.fn(maxBytes ?? DEFAULT_RESPONSE_BUDGET);
 }
 
-export function withResponseBudget(text: string, maxBytes?: number): BudgetedResult {
+export function withResponseBudget(raw: string, maxBytes?: number): BudgetedResult {
+  // Mask before splitting: a key cut in two at the budget boundary would be too short on
+  // either side for the response-level redaction to recognise.
+  const text = maskCredentials(raw);
   const budget = maxBytes ?? DEFAULT_RESPONSE_BUDGET;
   if (text.length <= budget) return { text, truncated: false };
   return registerTextRemainder(text, budget);

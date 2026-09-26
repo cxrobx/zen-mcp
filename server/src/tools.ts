@@ -35,6 +35,7 @@ import {
   type StorageSetResult,
   type TakeSnapshotResult,
 } from "@zen-mcp/shared";
+import { maskCredentials } from "@zen-mcp/shared/credential-redact";
 import { normalizeHost, normalizeUrl } from "@zen-mcp/shared/nav-redact";
 import { type DaemonClient, RpcError } from "./daemon-client.js";
 import {
@@ -153,6 +154,29 @@ function okWithImage(text: string, base64: string, mimeType: string): ToolRespon
       { type: "image", data: base64, mimeType },
     ],
   };
+}
+
+// Every tool's text passes through here on its way to the model: a page can show a key
+// truncated while its accessible name, text or input value holds the whole thing, and the
+// snapshot, the `active=` line, page text and error messages all carry that raw string. One
+// choke point instead of a call per tool, so a new tool cannot forget it. Images are untouched
+// here; screenshot_page masks the page itself before capturing (dom.maskCredentials).
+export function redactResponse<T>(response: T): T {
+  const r = response as unknown as ToolResponse | undefined;
+  if (!r || !Array.isArray(r.content)) return response;
+  let changed = false;
+  const content = r.content.map((c) => {
+    if (c.type !== "text") return c;
+    const text = maskCredentials(c.text);
+    if (text === c.text) return c;
+    changed = true;
+    return { ...c, text };
+  });
+  return (changed ? { ...r, content } : response) as T;
+}
+
+function withRedaction(handler: (...args: any[]) => any): (...args: any[]) => Promise<any> {
+  return async (...args: any[]) => redactResponse(await handler(...args));
 }
 
 function fail(err: unknown): ToolResponse {
@@ -694,7 +718,13 @@ export function registerTools(
   activeNav = nav;
   const server = {
     registerTool(name: string, config: unknown, handler: (...args: any[]) => any): unknown {
-      return (mcp.registerTool as any)(name, config, nav.wrap(name, handler));
+      return (mcp.registerTool as any)(name, config, withRedaction(nav.wrap(name, handler)));
+    },
+  };
+  // The nav-memory tools stay out of nav capture, but not out of redaction.
+  const plain = {
+    registerTool(name: string, config: unknown, handler: (...args: any[]) => any): unknown {
+      return (mcp.registerTool as any)(name, config, withRedaction(handler));
     },
   };
 
@@ -1662,8 +1692,16 @@ export function registerTools(
         });
         const base64 = dataUrlToBase64(r.dataUrl);
         const mimeType = dataUrlMimeType(r.dataUrl);
+        const maskNote =
+          typeof r.masked !== "number"
+            ? " - WARNING: this extension predates the screenshot credential mask, so any key on the page is in the image; update the extension"
+            : r.maskSkipped
+              ? ` - not masked: ${r.maskSkipped}`
+              : r.masked > 0
+                ? ` - ${r.masked} credential-shaped string${r.masked === 1 ? "" : "s"} masked in the page for the capture`
+                : "";
         return okWithImage(
-          `screenshot of tabId=${r.tabId} (${base64.length} bytes base64, ${mimeType})`,
+          `screenshot of tabId=${r.tabId} (${base64.length} bytes base64, ${mimeType})${maskNote}`,
           base64,
           mimeType,
         );
@@ -2726,7 +2764,7 @@ export function registerTools(
     },
   );
 
-  mcp.registerTool(
+  plain.registerTool(
     "get_domain_playbook",
     {
       title: "Get domain navigation playbook",
@@ -2779,7 +2817,7 @@ export function registerTools(
     },
   );
 
-  mcp.registerTool(
+  plain.registerTool(
     "nav_memory_stats",
     {
       title: "Navigation memory stats",
@@ -2796,7 +2834,7 @@ export function registerTools(
     },
   );
 
-  mcp.registerTool(
+  plain.registerTool(
     "nav_memory_forget",
     {
       title: "Forget navigation memory",

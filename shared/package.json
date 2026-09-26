@@ -16,6 +16,10 @@
     "./nav-redact": {
       "types": "./dist/nav-redact.d.ts",
       "default": "./dist/nav-redact.js"
+    },
+    "./credential-redact": {
+      "types": "./dist/credential-redact.d.ts",
+      "default": "./dist/credential-redact.js"
     }
   },
   "scripts": {

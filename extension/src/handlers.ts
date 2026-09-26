@@ -337,6 +337,62 @@ async function ensureSnapshotInjected(tabId: number, allFrames: boolean): Promis
   }
 }
 
+// Screenshot credential mask (mask/inject.ts). ISOLATED world, all frames: the page can
+// neither see the saved originals nor call the restore.
+async function maskCredentialsInTab(tabId: number): Promise<number> {
+  try {
+    await withTimeout(
+      browser.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ["mask/inject.js"],
+      }),
+      EXECUTE_SCRIPT_TIMEOUT_MS,
+      `credential mask injection did not finish within ${EXECUTE_SCRIPT_TIMEOUT_MS}ms`,
+    );
+    const results = await withTimeout(
+      browser.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        // Typed as returning void; the real API hands the return value back as .result.
+        func: (() =>
+          (window as unknown as { __zenExtMcpMaskCredentials?: () => number })
+            .__zenExtMcpMaskCredentials?.() ?? -1) as () => void,
+      }),
+      EXECUTE_SCRIPT_TIMEOUT_MS,
+      `credential mask did not finish within ${EXECUTE_SCRIPT_TIMEOUT_MS}ms`,
+    );
+    let total = 0;
+    for (const r of results) {
+      if (r.error) throw new Error(String(r.error));
+      const n = r.result as unknown as number;
+      if (typeof n !== "number" || n < 0) throw new Error("mask script missing in a frame");
+      total += n;
+    }
+    return total;
+  } catch (err) {
+    // Put back whatever frames did get masked before failing.
+    await restoreCredentialsInTab(tabId).catch(() => undefined);
+    const why = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `screenshot refused: could not mask credential-shaped text in the page first (${why}). ` +
+        "Nothing was captured; use get_page_text or wait_for to check the page instead.",
+    );
+  }
+}
+
+async function restoreCredentialsInTab(tabId: number): Promise<void> {
+  await withTimeout(
+    browser.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        (window as unknown as { __zenExtMcpRestoreCredentials?: () => number })
+          .__zenExtMcpRestoreCredentials?.();
+      },
+    }),
+    EXECUTE_SCRIPT_TIMEOUT_MS,
+    `credential restore did not finish within ${EXECUTE_SCRIPT_TIMEOUT_MS}ms`,
+  );
+}
+
 async function ensureEvaluatorInjected(tabId: number): Promise<void> {
   try {
     const alreadyPresent = await executeInMain<boolean>(
@@ -1244,8 +1300,21 @@ export const handlers: Record<string, Handler> = {
       typeof params.quality === "number"
         ? Math.max(0, Math.min(100, Math.round(params.quality)))
         : 80;
-    const dataUrl = await browser.tabs.captureTab(tabId, { format, quality });
-    return { tabId, dataUrl };
+    const tab = await browser.tabs.get(tabId);
+    const scriptable = /^(https?|file):/.test(tab.url ?? "");
+    if (!scriptable) {
+      const dataUrl = await browser.tabs.captureTab(tabId, { format, quality });
+      return { tabId, dataUrl, masked: 0, maskSkipped: `page can't be scripted (${tab.url ?? "no url"})` };
+    }
+    // Fails closed: a web page whose mask pass errors is not captured, because the capture
+    // is exactly what the mask exists to protect.
+    const masked = await maskCredentialsInTab(tabId);
+    try {
+      const dataUrl = await browser.tabs.captureTab(tabId, { format, quality });
+      return { tabId, dataUrl, masked };
+    } finally {
+      await restoreCredentialsInTab(tabId).catch(() => undefined);
+    }
   },
 
   [Methods.DomTakeSnapshot]: async (raw): Promise<TakeSnapshotResult> => {
