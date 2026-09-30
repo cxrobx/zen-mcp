@@ -2,7 +2,7 @@
 // Score the nav-memory quirk eval: merge shard reports, print the arm tables, the
 // task-stratified contrasts and the verdict against the rule fixed before the run.
 //
-//   node scripts/nav-memory-quirk-report.mjs [--bank bank.json] [--json out.json] shard1.json shard2.json ...
+//   node scripts/nav-memory-quirk-report.mjs [--bank bank.json] [--json out.json] [--pages a,b] shard1.json shard2.json ...
 //
 // Every contrast is stratified by page: the difference is taken within each page and
 // then averaged, so a page with more surviving runs cannot outvote the others.
@@ -10,10 +10,10 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 const args = process.argv.slice(2);
 const flag = name => { const i = args.indexOf(`--${name}`); return i >= 0 ? args.splice(i, 2)[1] : null; };
-const bankPath = flag('bank'), jsonPath = flag('json');
-if (args.length === 0) { console.error('usage: nav-memory-quirk-report.mjs [--bank file] [--json file] report.json ...'); process.exit(2); }
+const bankPath = flag('bank'), jsonPath = flag('json'), only = flag('pages')?.split(',');
+if (args.length === 0) { console.error('usage: nav-memory-quirk-report.mjs [--bank file] [--json file] [--pages a,b] report.json ...'); process.exit(2); }
 const reports = await Promise.all(args.map(async path => JSON.parse(await readFile(path, 'utf8'))));
-const everything = reports.flatMap(r => r.runs);
+const everything = reports.flatMap(r => r.runs).filter(r => !only || only.includes(r.task));
 const runs = everything.filter(r => !r.runnerFailure);
 const ARM_ORDER = ['off', 'shipped', 'ungated', 'ideal', 'off-changed', 'stale-ungated', 'stale-ideal'];
 const arms = ARM_ORDER.filter(arm => runs.some(r => r.arm === arm));

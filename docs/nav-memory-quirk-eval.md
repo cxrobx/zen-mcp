@@ -2,7 +2,79 @@
 
 Does automatic note injection change what an agent gets done, and in which direction: when the notes are right, when the page has changed since they were learned, and as the real pipeline writes them?
 
-**Status: protocol fixed and committed before any memory arm ran. Results are added below it when the run finishes.**
+The protocol below was fixed and committed (`e92ed29`) before any memory arm ran. The run finished 2026-09-30.
+
+## Results
+
+**No arm that showed notes completed more tasks than no memory by a margin that clears noise.** Hand-written notes, the best case, saved about one tool call per run and gained 8 points of completion, under the 15-point bar. The same notes cost 23 points once the page had changed. The pipeline's own notes did not help and leaned negative. By the rule fixed before the run, automatic injection does not earn its place for this planner; `get_domain_playbook` as an explicit lookup is what is left.
+
+384 runs, none lost, 1,827 planner calls on Claude Haiku 4.5.
+
+### Quirk pages
+
+| Arm | Completed | 95% interval | Mean calls | Claimed done, not done |
+| --- | ---: | ---: | ---: | ---: |
+| off | 40/48 (83%) | 70% to 91% | 9.0 | 4 |
+| shipped | 31/48 (65%) | 50% to 77% | 9.0 | 4 |
+| ungated | 35/48 (73%) | 59% to 83% | 8.9 | 2 |
+| ideal | 44/48 (92%) | 80% to 97% | 7.9 | 2 |
+| off-changed | 44/48 (92%) | 80% to 97% | 6.9 | 0 |
+| stale-ungated | 43/48 (90%) | 78% to 95% | 7.3 | 4 |
+| stale-ideal | 33/48 (69%) | 55% to 80% | 8.2 | 4 |
+
+### Against no memory, page by page
+
+| Contrast | Completion, points | 95% interval | p | Calls per run | 95% interval | p |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| shipped vs off | -19 | -31 to -4 | 0.026 | 0.0 | -0.6 to 0.6 | 1.000 |
+| ungated vs off | -10 | -21 to +2 | 0.206 | -0.1 | -0.6 to 0.4 | 0.801 |
+| ideal vs off | +8 | -2 to +21 | 0.303 | -1.1 | -1.8 to -0.4 | 0.017 |
+| stale-ungated vs off-changed | -2 | -13 to +6 | 1.000 | +0.4 | 0.0 to 1.0 | 0.219 |
+| stale-ideal vs off-changed | -23 | -31 to -17 | <0.001 | +1.3 | 0.8 to 1.9 | 0.001 |
+
+On the five pages with headroom, named before the run: ideal +10 (-7 to +27), shipped -30 (-50 to -10), ungated -17 (-33 to 0), stale-ideal -33 (-43 to -23), stale-ungated +3 (-10 to +13). Ideal saved 1.8 calls per run there (-2.7 to -0.9).
+
+### Read against the rule
+
+- **Ceiling: not cleared.** Ideal notes gained 8 points, 10 on the headroom pages. The interval reaches past 15, so a real gain at the bar is not excluded. What the run does establish is the saving in calls: about one per run, nearly two where the page has a quirk.
+- **Pipeline: no benefit.** The shipped arm's interval rules out a gain of more than a few points. Whether it does harm is not settled. Three of its eight pages showed no note and were identical to no memory, and those three alone came out 11 points lower by chance. On the five pages where it did show a note it was 23 points lower (-43 to -3, p = 0.07, a split chosen after the run). Its failed runs look like failed no-memory runs: the call budget spent on superseded snapshot UIDs. The planner mostly ignored the selectors it was given.
+- **Staleness: a loss larger than the gain, for notes specific enough to follow.** The mechanism is plain in the traces. On order, all six runs went to the moved address first, came back, and ran out of calls (0/6 against 2/6). On workspace, all six runs went looking for the section the note described and never pressed Create (0/6 against 6/6). The pipeline's notes went stale harmlessly (-2), because they say too little to mislead.
+- **Controls.** Off and ideal completed 12/12; shipped 10/12 and ungated 11/12. Ideal saved 1.3 calls per run (-2.0 to -0.7).
+
+A note specific enough to help is specific enough to mislead, and the pipeline writes notes that are neither. The value on offer is one or two calls per run. The exposure is a quarter of the tasks on a page that has changed.
+
+### Completion by page
+
+| Page | off | shipped | ungated | ideal | off-changed | stale-ungated | stale-ideal |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| nickname | 5/6 | 3/6 | 5/6 | 5/6 | 6/6 | 4/6 | 4/6 |
+| promo | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 |
+| invoice | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 |
+| assign | 5/6 | 5/6 | 5/6 | 6/6 | 6/6 | 5/6 | 5/6 |
+| settings | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 | 5/6 | 6/6 |
+| workspace | 3/6 | 1/6 | 0/6 | 3/6 | 6/6 | 6/6 | 0/6 |
+| order | 4/6 | 1/6 | 1/6 | 6/6 | 2/6 | 5/6 | 0/6 |
+| waitlist | 5/6 | 3/6 | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 |
+| city | 6/6 | 4/6 | 5/6 | 6/6 | | | |
+| rates | 6/6 | 6/6 | 6/6 | 6/6 | | | |
+
+Workspace under shipped showed no note and still scored 1/6 against 3/6. That is the size of the page-level noise at six runs.
+
+### Limits
+
+- One planner, Haiku 4.5, proposing up to four calls at a time without seeing the results between them. Many failures in every arm are the call budget spent after acting on a UID from a snapshot the planner had itself replaced. A stronger planner acting one call at a time may use a good note better and resist a stale one better.
+- Six runs per page per arm. Only the stale-ideal contrast survives a correction for five comparisons.
+- Eight pages written for this eval, and one first visit per page for the pipeline. The real store accumulates over many sessions.
+- A changed page here makes the learned fact wholly false. Real drift is usually partial.
+
+### Found along the way, not about memory
+
+- `fill` on a disabled input reports `filled` with no warning. The DOM value is set and the page's application registers nothing.
+- `take_snapshot` issued while a subframe is still loading fails with "Missing host permission for the tab or frames".
+
+### Housekeeping
+
+Every tab the harness opened was closed, and a sweep afterwards found none left on the fixture. The production note store holds no note for the fixture host. Focus was not asserted: the harness opens background tabs and calls no activation tool, and the active tab was not compared before and after.
 
 ## Protocol
 
