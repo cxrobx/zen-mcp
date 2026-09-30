@@ -13,7 +13,7 @@ WebExtension-backed MCP for Zen (Firefox). User docs in `README.md` and `docs/`;
 > **Before any push, grep what you are about to publish:**
 > ```sh
 > git grep -nIE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}" -- . | grep -v noreply@anthropic
-> git grep -nIiE "\b(XRF|QES|AEG|ISC|Madcraft)\b" -- .
+> git grep -nIiE -f ~/.config/publish-guard/client-names.txt -- .   # names live outside the repo
 > ```
 > This is not hypothetical. On 2026-09-19 a routing feature had put **two of Chris's real
 > email addresses** into `README.md` and `scripts/container-routes.test.mjs`, and they were
