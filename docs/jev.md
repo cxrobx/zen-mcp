@@ -1,5 +1,7 @@
 # Jev in zen-mcp
 
+**Unregistered 2026-10-16 (T187).** Neither tool is in the tool list any more: `navigate_goal` had 0 real uses in its 30-day review, and `evaluate_script` / `take_snapshot` usage rose rather than fell after `interactive_elements` shipped. The code (`server/src/goal.ts`, `jev.ts`, `interactive.ts`) and its unit tests stay; re-registering is restoring the `server.registerTool` block from git history.
+
 Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`); loop reworked 2026-09-18 after comparing it with browser-use's `jev-ultrafast` (§ *The loop, reworked*), and re-checked against that repo 2026-09-19, which found two of the "taken" rows only half-wired (§ *Re-checked, 2026-09-19*). In use since 2026-09-18 under a written tripwire at the bottom (§ *In use, with a tripwire*).
 
 **Scope: this is one build, not the Jev decision doc.** Whether Jev fits a problem at

@@ -8,9 +8,8 @@ Per-tab tools take `tabId` (durable) or `pageIdx` (positional) — see [Addressi
 |---|---|
 | **Containers** | `list_containers`, `container_routes`, `set_default_container`, `new_page_in_container` |
 | **Pages** | `open_url`, `list_pages`, `new_page`, `navigate_page`, `select_page`, `close_page`, `navigate_history`, `screenshot_page` |
-| **DOM read** | `take_snapshot`, `interactive_elements`, `clear_snapshot`, `resolve_uid_to_selector`, `evaluate_script`, `get_page_text`, `read_page`, `find_by_text`, `wait_for` |
+| **DOM read** | `take_snapshot`, `clear_snapshot`, `resolve_uid_to_selector`, `evaluate_script`, `get_page_text`, `read_page`, `find_by_text`, `wait_for` |
 | **DOM actions** | `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `fill_form_by_uid`, `drag_by_uid_to_uid`, `click`, `hover`, `fill`, `fill_secret`, `type`, `drag`, `select_option`, `press_key`, `scroll` |
-| **Goal navigation (Jev)** | `navigate_goal` |
 | **Cookies/storage** | `get_cookies`, `set_cookies`, `clear_cookies`, `get_storage`, `set_storage`, `clear_storage` |
 | **Diagnostics** | `get_firefox_info` |
 | **Navigation memory** | `get_domain_playbook`, `nav_memory_stats`, `nav_memory_forget` |
@@ -63,7 +62,9 @@ Publishable keys (`pk_live_`/`pk_test_`) are public and are left as they are. Re
 
 What masking can't catch: a key drawn in a `<canvas>` or an image, a key inside a closed shadow root, a key in an unfamiliar format that isn't next to the word secret, token or key, and a PDF.
 
-## interactive_elements and navigate_goal
+## interactive_elements and navigate_goal (unregistered)
+
+**Unregistered 2026-10-16 (T187).** Neither tool is in the tool list any more: `navigate_goal` had 0 real uses in its 30-day review, and `evaluate_script` / `take_snapshot` usage rose rather than fell after `interactive_elements` shipped. The code (`server/src/goal.ts`, `jev.ts`, `interactive.ts`) and its unit tests stay; re-registering is restoring the `server.registerTool` block from git history.
 
 `interactive_elements` lists a tab's controls one per line (UID, kind, label, link destination, row and region) from a fresh snapshot, so the UIDs work with `click_by_uid`. It is roughly 6× smaller than `take_snapshot` (measured on Search Console: 2,909 vs 18,764 characters). Row context tells same-label controls apart, and field values are never shown.
 

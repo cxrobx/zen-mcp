@@ -75,15 +75,14 @@ claude mcp add zen-ext -s user -- node /abs/path/to/zen-mcp/server/dist/index.js
 
 ## What it does
 
-The current surface is **41 tools** (38 browser tools plus 3 local navigation-memory tools). Per-tab tools take a durable `tabId` (or a positional `pageIdx`; see [addressing tabs](docs/tools.md#addressing-tabs-tabid-vs-pageidx)).
+The current surface is **39 tools** (36 browser tools plus 3 local navigation-memory tools). Per-tab tools take a durable `tabId` (or a positional `pageIdx`; see [addressing tabs](docs/tools.md#addressing-tabs-tabid-vs-pageidx)).
 
 | Bucket | Tools |
 |---|---|
 | **Containers** | `list_containers`, `container_routes`, `set_default_container`, `new_page_in_container` |
 | **Pages** | `open_url`, `list_pages`, `new_page`, `navigate_page`, `select_page`, `close_page`, `navigate_history`, `screenshot_page` |
-| **DOM read** | `take_snapshot`, `interactive_elements`, `clear_snapshot`, `resolve_uid_to_selector`, `evaluate_script`, `get_page_text`, `read_page`, `find_by_text`, `wait_for` |
+| **DOM read** | `take_snapshot`, `clear_snapshot`, `resolve_uid_to_selector`, `evaluate_script`, `get_page_text`, `read_page`, `find_by_text`, `wait_for` |
 | **DOM actions** | `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `fill_form_by_uid`, `drag_by_uid_to_uid`, `click`, `hover`, `fill`, `fill_secret`, `type`, `drag`, `select_option`, `press_key`, `scroll` |
-| **Goal navigation (Jev)** | `navigate_goal` |
 | **Cookies/storage** | `get_cookies`, `set_cookies`, `clear_cookies`, `get_storage`, `set_storage`, `clear_storage` |
 | **Diagnostics** | `get_firefox_info` |
 | **Navigation memory** | `get_domain_playbook`, `nav_memory_stats`, `nav_memory_forget` |
@@ -91,7 +90,6 @@ The current surface is **41 tools** (38 browser tools plus 3 local navigation-me
 - **Container routing.** A host → container table, plus per-directory defaults, decides which cookie jar a URL opens in, and `open_url` reuses the tab already open there. See [docs/container-routing.md](docs/container-routing.md).
 - **Non-disruptive by default.** Tabs open in the background and tools act on a tab by id without focusing it, so an agent can drive one container while you browse in another.
 - **`fill_secret`.** Fills a form field from a macOS Keychain secret by name, only into hosts it is bound to, so the value never enters the transcript.
-- **`navigate_goal`.** Reaches a read-only destination with TypeSafe's Jev choosing each click, on opt-in hosts only. See [docs/jev.md](docs/jev.md).
 - **Navigation memory.** Learns privacy-minimized structural notes about sites it has driven and injects them as advisory hints. See [docs/nav-memory.md](docs/nav-memory.md).
 
 Input is synthetic (`isTrusted: false`), so popups, clipboard, file pickers and browser shortcuts are out of reach. The full list, and what to use instead, is in [docs/limitations.md](docs/limitations.md).
@@ -101,12 +99,12 @@ Input is synthetic (`isTrusted: false`), so popups, clipboard, file pickers and 
 | Doc | What's in it |
 |---|---|
 | [docs/install.md](docs/install.md) | Requirements, build, AMO signing, install gotchas, daemon launchd plist, nav-memory flags, container-scoped registration |
-| [docs/tools.md](docs/tools.md) | Tool surface, `tabId` vs `pageIdx` and Zen workspaces, `fill_secret`, `interactive_elements`, `navigate_goal`, absent and deferred tools, fidelity gaps, focus behavior, Zen spaces |
+| [docs/tools.md](docs/tools.md) | Tool surface, `tabId` vs `pageIdx` and Zen workspaces, `fill_secret`, the unregistered `interactive_elements` / `navigate_goal`, absent and deferred tools, fidelity gaps, focus behavior, Zen spaces |
 | [docs/container-routing.md](docs/container-routing.md) | The `containers.json` format, accounts, consoles, `projects` directory defaults, matching, precedence, tab reuse, failure modes |
 | [docs/limitations.md](docs/limitations.md) | What the MV3 sandbox puts out of reach, why Marionette was rejected, synthetic-input consequences |
 | [docs/architecture.md](docs/architecture.md) | Multi-entry pattern, auth + heartbeat, what the daemon owns, snapshot caching |
 | [docs/nav-memory.md](docs/nav-memory.md) | Navigation memory design, privacy controls, consolidation, operations |
-| [docs/jev.md](docs/jev.md) | `navigate_goal` design, thresholds and measurements |
+| [docs/jev.md](docs/jev.md) | `navigate_goal` design and measurements (tool unregistered 2026-10-16) |
 | [docs/development.md](docs/development.md) | Dev loop with `web-ext run`, test suites and live probes |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Connection, permission, port and token problems |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |

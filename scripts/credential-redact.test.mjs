@@ -382,12 +382,6 @@ test("find_by_text: matches come back masked", async () => {
   assert.match(r.text, /sk_test_…9x4Q/);
 });
 
-test("interactive_elements: control names and values are masked", async () => {
-  const r = await mcp.callTool("interactive_elements", { tabId: TAB.tabId });
-  assert.equal(r.isError, false, r.text);
-  assertNoSecrets("interactive_elements", r.text);
-});
-
 test("get_page_text: page text is masked", async () => {
   const r = await mcp.callTool("get_page_text", { tabId: TAB.tabId });
   assert.equal(r.isError, false, r.text);
