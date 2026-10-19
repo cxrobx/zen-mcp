@@ -46,6 +46,7 @@ import { ZenToolError } from "./errors.js";
 import { type FeedbackOptions, feedbackLine, truncateOneLine } from "./feedback.js";
 import { continueCursor, withResponseBudget } from "./response-budget.js";
 import { parseLocator } from "./locator.js";
+import { type TrustedClickResult, trustedClick, xpathLiteral } from "./trusted.js";
 import {
   GOAL_DEFAULT_MAX_STEPS,
   GOAL_DEFAULT_MIN_CONFIDENCE,
@@ -559,6 +560,13 @@ function sameHostAndPort(pageUrl: string, target: { host: string; port: string }
  */
 function snapshotErrorText(message: string): string {
   return `the in-page snapshot walk threw and produced nothing: ${message}. This is a bug in the snapshot code, not an empty page - report it rather than concluding the page has no controls.`;
+}
+
+const TRUSTED_DESCRIPTION =
+  "Opt-in: post ONE real OS-level click (isTrusted: true) instead of a synthetic one, for controls that ignore synthetic events (Material dropdowns, a button that opens a popup window). It brings this tab and its window to the front, moves the real cursor for a moment and puts it back, and hands focus back to the app that had it. It refuses, clicking nothing, if the element is covered, moves, or Zen is not frontmost. Needs the native helper (native/build.sh) and macOS Accessibility. Leave unset for normal background use.";
+
+function trustedText(what: string, r: TrustedClickResult): string {
+  return `trusted click on ${what}${r.matchedTag ? ` <${r.matchedTag.toLowerCase()}>` : ""}; page: ${r.url}${r.restoredFocus ? " (focus handed back)" : ""}`;
 }
 
 function okWithFeedback(text: string, r: InteractionResult, opts?: FeedbackOptions): ToolResponse {
@@ -1441,11 +1449,15 @@ export function registerTools(
       inputSchema: {
         ...targetShape(),
         uid: z.string().describe("UID from take_snapshot"),
+        trusted: z.boolean().optional().describe(TRUSTED_DESCRIPTION),
       },
     },
-    async ({ pageIdx, tabId, expectTabSet, uid }) => {
+    async ({ pageIdx, tabId, expectTabSet, uid, trusted }) => {
       try {
         const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
+        if (trusted) {
+          return ok(trustedText(`uid=${uid}`, await trustedClick(daemon, page.tabId, { uid })));
+        }
         const r = await daemon.call<InteractionResult>(Methods.DomClick, {
           tabId: page.tabId,
           uid,
@@ -2036,12 +2048,16 @@ export function registerTools(
         ...targetShape(),
         selector: z.string(),
         timeoutMs: z.number().int().positive().optional(),
+        trusted: z.boolean().optional().describe(TRUSTED_DESCRIPTION),
       },
     },
-    async ({ pageIdx, tabId, expectTabSet, selector, timeoutMs }) => {
+    async ({ pageIdx, tabId, expectTabSet, selector, timeoutMs, trusted }) => {
       try {
         const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
         const locator = toLocator(selector);
+        if (trusted) {
+          return ok(trustedText(selector, await trustedClick(daemon, page.tabId, { locator }, timeoutMs)));
+        }
         const r = await daemon.call<InteractionResult>(Methods.DomClickByLocator, {
           tabId: page.tabId,
           locator,
@@ -2231,19 +2247,36 @@ export function registerTools(
     {
       title: "Select <option>",
       description:
-        "Pick an option from a <select> element identified by locator. Choose by value, label (visible text), or index.",
+        "Pick an option from a <select> element identified by locator. Choose by value, label (visible text), or index. With trusted: true it instead operates a custom listbox (Material, ARIA role=listbox/combobox): a real click on the selector opens it, then a real click on the visible role=option whose text equals `value` (by=label) or whose data-value equals it (by=value).",
       inputSchema: {
         ...targetShape(),
         selector: z.string(),
         by: z.enum(["value", "label", "index"]),
         value: z.string(),
         timeoutMs: z.number().int().positive().optional(),
+        trusted: z.boolean().optional().describe(TRUSTED_DESCRIPTION),
       },
     },
-    async ({ pageIdx, tabId, expectTabSet, selector, by, value, timeoutMs }) => {
+    async ({ pageIdx, tabId, expectTabSet, selector, by, value, timeoutMs, trusted }) => {
       try {
         const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
         const locator = toLocator(selector);
+        if (trusted) {
+          if (by === "index") {
+            throw new ZenToolError("BAD_INPUT", "trusted select_option takes by=label or by=value, not index");
+          }
+          await trustedClick(daemon, page.tabId, { locator }, timeoutMs);
+          const lit = xpathLiteral(value);
+          const option: LocatorSpec = {
+            kind: "xpath",
+            expression:
+              by === "label"
+                ? `//*[@role='option'][normalize-space(.)=${lit}]`
+                : `//*[@role='option'][@data-value=${lit}]`,
+          };
+          const r = await trustedClick(daemon, page.tabId, { locator: option }, timeoutMs ?? 3_000);
+          return ok(trustedText(`option ${by}="${value}" in ${selector}`, r));
+        }
         const r = await daemon.call<SelectOptionResult>(Methods.DomSelectOptionByLocator, {
           tabId: page.tabId,
           locator,

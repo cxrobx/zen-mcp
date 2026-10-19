@@ -51,6 +51,8 @@ import {
   type StorageSetParams,
   type StorageSetResult,
   type TabIdResult,
+  type TrustedPointParams,
+  type TrustedPointResult,
   type TakeSnapshotParams,
   type TakeSnapshotResult,
   type TypeByLocatorParams,
@@ -446,8 +448,16 @@ async function executeInMain<T>(
   const first = results[0];
   if (!first) throw new Error("no executeScript result");
   if (first.error) throw new Error(String(first.error));
+  // runInteractionCommand returns its result JSON-encoded behind this prefix: a plain object
+  // built in the page's world came back from some pages (Google Admin) as "result is
+  // non-structured-clonable data", after the click had already run. A string always clones.
+  if (typeof first.result === "string" && first.result.startsWith(INTERACTION_JSON_PREFIX)) {
+    return JSON.parse(first.result.slice(INTERACTION_JSON_PREFIX.length)) as T;
+  }
   return first.result as T;
 }
+
+const INTERACTION_JSON_PREFIX = "\u0000zen-json:";
 
 async function executeInAllFrames<T>(
   tabId: number,
@@ -598,6 +608,9 @@ async function runFillLike(
 }
 
 async function runInteractionCommand(raw: unknown): Promise<Record<string, unknown>> {
+  // Self-contained (serialized into the page), so the prefix is repeated here rather than
+  // read from INTERACTION_JSON_PREFIX.
+  const run = async (): Promise<Record<string, unknown>> => {
   const command = raw as Record<string, any>;
   const defaultTimeoutMs = 5_000;
   const pollMs = 200;
@@ -660,8 +673,13 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
   };
 
   const setNativeValue = (input: HTMLInputElement | HTMLTextAreaElement, value: string): void => {
-    const proto = Object.getPrototypeOf(input);
-    const desc = Object.getOwnPropertyDescriptor(proto, "value");
+    // The base class's setter, not the instance's own prototype: React and Angular wrap the
+    // instance property, and a subclass prototype may not carry the descriptor at all.
+    const base =
+      input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const desc =
+      Object.getOwnPropertyDescriptor(base, "value") ??
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value");
     if (desc?.set) desc.set.call(input, value);
     else input.value = value;
   };
@@ -739,9 +757,17 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
     const html = el as HTMLElement;
     const input = el as HTMLInputElement | HTMLTextAreaElement;
     if ("value" in input && !html.isContentEditable) {
+      // Framework inputs (Material, React) listen for a real-looking InputEvent on a focused
+      // field, and some re-render from their own model straight after. Fire what `type`
+      // fires, then read back; if the framework put its old value back, type it instead.
+      if (typeof html.focus === "function") html.focus();
       setNativeValue(input, value);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(
+        new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: value }),
+      );
+      input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      if (input.value !== value) return typeElement(el, value, 0, true);
       return true;
     } else if (html.isContentEditable) {
       const stuck = await richInsert(html, value);
@@ -1121,6 +1147,92 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
     return {};
   }
   throw new Error(`unknown interaction command: ${String(command.kind)}`);
+  };
+  return ("\u0000zen-json:" + JSON.stringify(await run())) as unknown as Record<string, unknown>;
+}
+
+// Runs in the page (MAIN world, the element's own frame). Finds the first VISIBLE match (a
+// Material listbox keeps 0px copies of its options in the DOM), optionally scrolls it into
+// view, and returns the centre of its on-screen part in screen CSS px. It also re-checks that
+// the element is what is painted at that point, so a real click there cannot land on
+// something else. Self-contained: serialized into the page.
+async function locateForTrustedInput(raw: unknown): Promise<TrustedPointResult> {
+  const p = raw as {
+    selector: string | null;
+    locator: LocatorSpec | null;
+    scroll: boolean;
+    timeoutMs: number;
+  };
+  const all = (): Element[] => {
+    if (p.selector) return Array.from(document.querySelectorAll(p.selector));
+    const loc = p.locator as LocatorSpec;
+    if (loc.kind === "css") return Array.from(document.querySelectorAll(loc.selector));
+    const snap = document.evaluate(loc.expression, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    const out: Element[] = [];
+    for (let i = 0; i < snap.snapshotLength; i++) out.push(snap.snapshotItem(i) as Element);
+    return out;
+  };
+  const shown = (el: Element): boolean => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const st = getComputedStyle(el);
+    return st.visibility !== "hidden" && st.display !== "none";
+  };
+  const deadline = Date.now() + p.timeoutMs;
+  let el: Element | undefined;
+  let anyMatch = false;
+  while (true) {
+    const found = all();
+    anyMatch = anyMatch || found.length > 0;
+    el = found.find(shown);
+    if (el || Date.now() > deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  if (!el) return { ok: false, reason: anyMatch ? "not_visible" : "not_found" };
+  if (p.scroll) {
+    (el as HTMLElement).scrollIntoView({ block: "center", inline: "center" });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  const r = el.getBoundingClientRect();
+  const left = Math.max(r.left, 0);
+  const right = Math.min(r.right, window.innerWidth);
+  const top = Math.max(r.top, 0);
+  const bottom = Math.min(r.bottom, window.innerHeight);
+  if (right - left < 1 || bottom - top < 1) return { ok: false, reason: "not_visible" };
+  const x = (left + right) / 2;
+  const y = (top + bottom) / 2;
+  // What is painted at the point, through open shadow roots, and whether it is el (or inside
+  // el, or el's shadow host chain).
+  const root = el.getRootNode() as Document | ShadowRoot;
+  let hit: Element | null = document.elementFromPoint(x, y);
+  while (hit && hit.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  const composedContains = (outer: Element, inner: Element | null): boolean => {
+    let n: Node | null = inner;
+    while (n) {
+      if (n === outer) return true;
+      n = n.parentNode ?? ((n as ShadowRoot).host ?? null);
+    }
+    return false;
+  };
+  if (!hit || !(composedContains(el, hit) || composedContains(hit, el) || root === document && hit === el)) {
+    const h = hit as HTMLElement | null;
+    const name = h
+      ? `<${h.tagName.toLowerCase()}${h.id ? `#${h.id}` : ""}> ${(h.getAttribute("aria-label") ?? h.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60)}`
+      : "nothing";
+    return { ok: false, reason: "covered", coveredBy: name };
+  }
+  const w = window as unknown as { mozInnerScreenX: number; mozInnerScreenY: number };
+  return {
+    ok: true,
+    screenX: w.mozInnerScreenX + x,
+    screenY: w.mozInnerScreenY + y,
+    devicePixelRatio: window.devicePixelRatio,
+    matchedTag: (el as HTMLElement).tagName,
+  };
 }
 
 async function runScrollCommand(raw: unknown): Promise<Omit<ScrollResult, "tabId">> {
@@ -1591,6 +1703,55 @@ export const handlers: Record<string, Handler> = {
         { kind: "click", locator, timeoutMs },
       ]),
     );
+  },
+
+  // Opt-in trusted input (T299). This is the ONE handler that deliberately brings a tab and
+  // its window to the front: a real OS click lands wherever the screen shows, so the tab must
+  // be what the screen shows. It only runs when a caller passed `trusted: true`.
+  [Methods.DomTrustedPoint]: async (raw): Promise<TrustedPointResult> => {
+    const p = raw as TrustedPointParams;
+    const tabId = requireNumber(p?.tabId, "tabId");
+    let selector: string | null = null;
+    let frameId: number | undefined;
+    if (typeof p.uid === "string") {
+      const entry = await lookupUidEntry(tabId, p.uid);
+      selector = entry.css;
+      frameId = entry.frameId;
+    } else if (!p.locator) {
+      throw new Error("uid or locator is required");
+    }
+    const tab = await browser.tabs.get(tabId);
+    if (p.activate) {
+      if (tab.windowId !== undefined) await browser.windows.update(tab.windowId, { focused: true });
+      await browser.tabs.update(tabId, { active: true });
+      // A tab in another Zen workspace makes Zen switch spaces first, which takes longer
+      // than a plain tab switch (measured >250ms), so wait for the tab to report active.
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const t = await browser.tabs.get(tabId);
+        if (t.active) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    const page = await executeInMain<TrustedPointResult>(
+      tabId,
+      locateForTrustedInput,
+      [{ selector, locator: p.locator ?? null, scroll: p.scroll, timeoutMs: p.timeoutMs ?? 5_000 }],
+      { frameId },
+    );
+    const now = await browser.tabs.get(tabId);
+    const win = now.windowId !== undefined ? await browser.windows.get(now.windowId) : undefined;
+    const result: TrustedPointResult = {
+      ...page,
+      tabActive: now.active === true,
+      windowFocused: win?.focused === true,
+      url: now.url ?? "",
+      title: now.title ?? "",
+    };
+    if (result.ok && !result.tabActive) return { ...result, ok: false, reason: "tab_not_active" };
+    if (result.ok && !result.windowFocused) return { ...result, ok: false, reason: "window_not_focused" };
+    return result;
   },
 
   [Methods.DomHoverByLocator]: async (raw): Promise<InteractionResult> => {

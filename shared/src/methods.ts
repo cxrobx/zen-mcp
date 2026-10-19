@@ -27,6 +27,7 @@ export const Methods = {
   DomSelectOptionByLocator: "dom.selectOptionByLocator",
   DomPressKey: "dom.pressKey",
   DomScroll: "dom.scroll",
+  DomTrustedPoint: "dom.trustedPoint",
   CookiesGet: "cookies.get",
   CookiesSet: "cookies.set",
   CookiesClear: "cookies.clear",
@@ -303,6 +304,37 @@ export interface InteractionResult extends TabIdResult {
    */
   opensNewTab?: string;
   feedback?: ActionFeedback;
+}
+
+/**
+ * Opt-in trusted input: where on screen to post a real OS click for one element. The
+ * extension brings the tab's window to the front (activate=true), scrolls the element into
+ * view, and reports the visible centre in screen CSS px. Called twice per trusted click:
+ * once to prepare, once (activate=false, scroll=false) as the last check before firing.
+ */
+export interface TrustedPointParams {
+  tabId: number;
+  uid?: string;
+  locator?: LocatorSpec;
+  activate: boolean;
+  scroll: boolean;
+  timeoutMs?: number;
+}
+
+export interface TrustedPointResult {
+  ok: boolean;
+  /** not_found | not_visible | covered | tab_not_active | window_not_focused */
+  reason?: string;
+  coveredBy?: string;
+  screenX?: number;
+  screenY?: number;
+  devicePixelRatio?: number;
+  matchedTag?: string;
+  /** Whether the tab is active and its window focused, read by the extension. */
+  tabActive?: boolean;
+  windowFocused?: boolean;
+  url?: string;
+  title?: string;
 }
 
 export interface FillByLocatorParams extends LocatorParams {
