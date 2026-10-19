@@ -355,6 +355,19 @@ test("masker: read_page's Markdown-escaped underscores don't hide a key", () => 
   assert.match(out, /sk\\_test\\_…9x4Q/);
 });
 
+test("masker: a DKIM public key is not a credential, a private key body still is", () => {
+  // Real DKIM record shape: an RSA SubjectPublicKeyInfo in base64 after p=.
+  const dkim =
+    "DKIM key: v=DKIM1; k=rsa; p=" +
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA" + "q1w2E3r4T5y6U7i8O9p0" + "/" + "AbCdEf1234567890GhIjKlMn" + "+QwErTy";
+  assert.equal(maskCredentials(dkim), dkim);
+  const dkim1024 = "public key p=" + "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC" + "7xY2zQ9w";
+  assert.equal(maskCredentials(dkim1024), dkim1024);
+  // PKCS#8 private key body after the word "key", no PEM armour: still masked.
+  const priv = "private key " + "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC" + "9x4Q";
+  assert.notEqual(maskCredentials(priv), priv);
+});
+
 test("masker: a key split across elements is masked on its second line", () => {
   const [prefix, body] = [K.stripeRestricted.slice(0, 8), K.stripeRestricted.slice(8)];
   const snapshotText = `p#1_2 text="Restricted key"\n    span#1_3 text="${prefix}"\n    span#1_4 text="${body}"\n    button#1_5 text="Roll key"`;

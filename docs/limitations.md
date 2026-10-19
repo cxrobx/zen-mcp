@@ -28,14 +28,16 @@ Every click, hover and key press is built in JavaScript and fired with `dispatch
 | A click that opens a new tab or window (`target="_blank"`, `window.open`) — the popup blocker stops it, and Firefox's "prevented a pop-up" bar is outside what `screenshot_page` captures | For a `_blank` link, `click` names the URL in its result (`opens in a new tab: <url>`); `open_url` it. A button that builds its URL in script: `click` with `trusted: true` |
 | Clipboard writes, fullscreen, file pickers, audible autoplay | Not reachable. File uploads: Playwright, where the session isn't needed |
 | CSS `:hover` — `hover` fires mouse events but never puts the element in the hover state | Works only on menus that open from JavaScript listeners |
-| The browser's own handling of a key: `press_key` doesn't type text, move focus on `Tab`, submit a form on `Enter`, or reach browser shortcuts like `Cmd+L` | `fill`/`type` for text, `click` the submit button, `open_url`/`navigate_page` for navigation |
+| The browser's own handling of a key: `press_key` doesn't type text, move focus on `Tab`, submit a form on `Enter`, or reach browser shortcuts like `Cmd+L` | `fill`/`type` for text, `click` the submit button, `open_url`/`navigate_page` for navigation, or `press_key` with `trusted: true` |
 | Sites that check `isTrusted` and ignore synthetic events (Google's Material dropdowns, some option menus, some anti-bot checks) | `click` / `click_by_uid` with `trusted: true`; `select_option` with `trusted: true` for a custom listbox |
 
 Where the page cancels part of a click, `click` behaves as a browser does (since extension 0.0.21): a cancelled `pointerdown` suppresses `mousedown`/`mouseup` and leaves focus alone, and a cancelled `mousedown` leaves focus alone. Before that, the forced focus opened and immediately closed menus that cancel the press to keep focus off their trigger (Radix-style).
 
 ### Trusted input (opt-in)
 
-`click`, `click_by_uid` and `select_option` take `trusted: true`. Instead of dispatching events, zen-mcp posts **one real macOS mouse click** at the element's position on screen, through a small native helper (`native/zen-mcp-input`, `CGEventPost`). The page sees `isTrusted: true` and the browser counts it as a user action, so Material dropdowns open and `window.open` popups are allowed. It is not a browser remote-control channel: nothing new listens on a port, and the helper can do exactly one thing, a left click.
+`click`, `click_by_uid`, `select_option` and `press_key` take `trusted: true`. Instead of dispatching events, zen-mcp posts **one real macOS mouse click** at the element's position on screen, through a small native helper (`native/zen-mcp-input`, `CGEventPost`). The page sees `isTrusted: true` and the browser counts it as a user action, so Material dropdowns open and `window.open` popups are allowed. It is not a browser remote-control channel: nothing new listens on a port, and the helper does exactly two things, a left click and one key press (or combo).
+
+A trusted click names any tab or popup window it opened (`opened: tabId=…`), so a popup can be read or closed by id. A trusted `press_key` with a `selector` clicks that element first, the way a person focuses it; without one the key goes to whatever has focus in the tab. Because the key is real, the browser's own handling runs too: `Tab` moves focus, `Enter` submits. `Cmd+Q` and `Cmd+Opt+Esc` are refused.
 
 What it costs, and why it is never the default:
 

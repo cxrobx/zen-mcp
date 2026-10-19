@@ -92,7 +92,7 @@ The current surface is **39 tools** (36 browser tools plus 3 local navigation-me
 - **`fill_secret`.** Fills a form field from a macOS Keychain secret by name, only into hosts it is bound to, so the value never enters the transcript.
 - **Navigation memory.** Learns privacy-minimized structural notes about sites it has driven and injects them as advisory hints. See [docs/nav-memory.md](docs/nav-memory.md).
 
-Input is synthetic (`isTrusted: false`), so popups, clipboard, file pickers and browser shortcuts are out of reach. The exception is opt-in: `trusted: true` on `click`, `click_by_uid` and `select_option` posts one real macOS click through a native helper (`native/build.sh`, needs Accessibility). It brings the tab to the front and briefly moves the cursor, which is why it is never the default. It is what opens Material dropdowns and popup buttons. The full list, and what to use instead, is in [docs/limitations.md](docs/limitations.md).
+Input is synthetic (`isTrusted: false`), so popups, clipboard, file pickers and browser shortcuts are out of reach. The exception is opt-in: `trusted: true` on `click`, `click_by_uid`, `select_option` and `press_key` posts one real macOS click or key press through a native helper (`native/build.sh`, needs Accessibility). It brings the tab to the front and briefly moves the cursor, which is why it is never the default. It is what opens Material dropdowns and popup buttons. The full list, and what to use instead, is in [docs/limitations.md](docs/limitations.md).
 
 ## Docs
 

@@ -13,10 +13,27 @@ const PREFERRED_ID_ATTRS = ['id', 'data-testid', 'data-test-id'];
 const MAX_SEGMENT_LENGTH = 64;
 
 /**
+ * Separates the selector of a shadow host from a selector inside its (open) shadow root:
+ * `host-sel >>> inner-sel`. A plain CSS selector cannot cross a shadow boundary, so every
+ * resolver in handlers.ts splits on this and descends through `shadowRoot` per part.
+ */
+export const SHADOW_SEPARATOR = ' >>> ';
+
+/**
  * Generate CSS selector for element
- * Prefers stable identifiers: id, data-testid, then falls back to nth-of-type
+ * Prefers stable identifiers: id, data-testid, then falls back to nth-of-type.
+ * An element inside an open shadow root gets its host's selector, SHADOW_SEPARATOR, then a
+ * selector relative to that shadow root.
  */
 export function generateCssSelector(el: Element): string {
+  const root = el.getRootNode();
+  if (typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) {
+    return generateCssSelector(root.host) + SHADOW_SEPARATOR + localCssSelector(el);
+  }
+  return localCssSelector(el);
+}
+
+function localCssSelector(el: Element): string {
   const path: string[] = [];
   let current: Element | null = el;
 
@@ -35,7 +52,7 @@ export function generateCssSelector(el: Element): string {
             : selector + `[${idAttr}="${escapeCssAttributeValue(value)}"]`;
         const isTerminal =
           idAttr === 'id' ||
-          (current.ownerDocument?.querySelectorAll(candidate).length ?? 0) === 1;
+          ((current.getRootNode() as ParentNode).querySelectorAll?.(candidate).length ?? 0) === 1;
         if (idAttr === 'id') {
           selector += '#' + CSS.escape(value);
         } else {

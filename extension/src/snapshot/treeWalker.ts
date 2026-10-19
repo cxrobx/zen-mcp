@@ -143,6 +143,23 @@ export function walkTree(
           childResults.push(...childResult.relevantChildren);
         }
       }
+      // Open shadow root: its controls are what the page renders (web components, React apps
+      // mounted in shadow DOM like Impact's), and el.children never reaches them. Closed roots
+      // are unreachable by design. Selectors for these nodes carry ' >>> ' (selectorGenerator).
+      const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+      if (shadow) {
+        for (let i = 0; i < shadow.children.length; i++) {
+          if (counter >= MAX_NODES) {
+            truncated = true;
+            break;
+          }
+          const child = shadow.children[i];
+          if (!child || child.tagName === 'STYLE' || child.tagName === 'SCRIPT') continue;
+          const childResult = walk(child, depth + 1);
+          if (childResult.node) childResults.push(childResult.node);
+          else if (childResult.relevantChildren.length > 0) childResults.push(...childResult.relevantChildren);
+        }
+      }
     }
 
     // Now decide if THIS element should be included

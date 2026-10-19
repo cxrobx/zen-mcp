@@ -611,6 +611,34 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
   // Self-contained (serialized into the page), so the prefix is repeated here rather than
   // read from INTERACTION_JSON_PREFIX.
   const run = async (): Promise<Record<string, unknown>> => {
+  // Resolves a snapshot selector across open shadow roots: parts split on ' >>> ' (see
+  // snapshot/selectorGenerator.ts) descend through each host's shadowRoot. A plain selector
+  // that matches nothing in the document is also tried inside every open shadow root.
+  // Self-contained copies live in each injected function; keep them identical.
+  const deepQueryAll = (sel: string): Element[] => {
+    const parts = sel.split(" >>> ");
+    let scopes: ParentNode[] = [document];
+    for (let i = 0; i < parts.length; i++) {
+      const next: Element[] = [];
+      for (const scope of scopes) next.push(...Array.from(scope.querySelectorAll(parts[i] as string)));
+      if (i === parts.length - 1) {
+        if (next.length > 0 || parts.length > 1) return next;
+        break;
+      }
+      scopes = next.map((e) => e.shadowRoot).filter((r): r is ShadowRoot => !!r);
+    }
+    const found: Element[] = [];
+    const visit = (root: ParentNode): void => {
+      for (const e of Array.from(root.querySelectorAll("*"))) {
+        const shadow = e.shadowRoot;
+        if (!shadow) continue;
+        found.push(...Array.from(shadow.querySelectorAll(sel)));
+        visit(shadow);
+      }
+    };
+    visit(document);
+    return found;
+  };
   const command = raw as Record<string, any>;
   const defaultTimeoutMs = 5_000;
   const pollMs = 200;
@@ -619,7 +647,7 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
     loc.kind === "css" ? loc.selector : loc.expression;
 
   const findByLocator = (loc: LocatorSpec): Element | null => {
-    if (loc.kind === "css") return document.querySelector(loc.selector);
+    if (loc.kind === "css") return deepQueryAll(loc.selector)[0] ?? null;
     return document.evaluate(
       loc.expression,
       document,
@@ -645,7 +673,7 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
   };
 
   const findBySelector = (selector: string): Element => {
-    const el = document.querySelector(selector);
+    const el = deepQueryAll(selector)[0];
     if (!el) throw new Error(`element not found: ${selector}`);
     return el;
   };
@@ -1163,10 +1191,38 @@ async function locateForTrustedInput(raw: unknown): Promise<TrustedPointResult> 
     scroll: boolean;
     timeoutMs: number;
   };
+  // Resolves a snapshot selector across open shadow roots: parts split on ' >>> ' (see
+  // snapshot/selectorGenerator.ts) descend through each host's shadowRoot. A plain selector
+  // that matches nothing in the document is also tried inside every open shadow root.
+  // Self-contained copies live in each injected function; keep them identical.
+  const deepQueryAll = (sel: string): Element[] => {
+    const parts = sel.split(" >>> ");
+    let scopes: ParentNode[] = [document];
+    for (let i = 0; i < parts.length; i++) {
+      const next: Element[] = [];
+      for (const scope of scopes) next.push(...Array.from(scope.querySelectorAll(parts[i] as string)));
+      if (i === parts.length - 1) {
+        if (next.length > 0 || parts.length > 1) return next;
+        break;
+      }
+      scopes = next.map((e) => e.shadowRoot).filter((r): r is ShadowRoot => !!r);
+    }
+    const found: Element[] = [];
+    const visit = (root: ParentNode): void => {
+      for (const e of Array.from(root.querySelectorAll("*"))) {
+        const shadow = e.shadowRoot;
+        if (!shadow) continue;
+        found.push(...Array.from(shadow.querySelectorAll(sel)));
+        visit(shadow);
+      }
+    };
+    visit(document);
+    return found;
+  };
   const all = (): Element[] => {
-    if (p.selector) return Array.from(document.querySelectorAll(p.selector));
+    if (p.selector) return deepQueryAll(p.selector);
     const loc = p.locator as LocatorSpec;
-    if (loc.kind === "css") return Array.from(document.querySelectorAll(loc.selector));
+    if (loc.kind === "css") return deepQueryAll(loc.selector);
     const snap = document.evaluate(loc.expression, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
     const out: Element[] = [];
     for (let i = 0; i < snap.snapshotLength; i++) out.push(snap.snapshotItem(i) as Element);
@@ -1238,9 +1294,38 @@ async function locateForTrustedInput(raw: unknown): Promise<TrustedPointResult> 
 async function runScrollCommand(raw: unknown): Promise<Omit<ScrollResult, "tabId">> {
   const params = raw as Record<string, any>;
   const pollMs = 200;
+  // Resolves a snapshot selector across open shadow roots: parts split on ' >>> ' (see
+  // snapshot/selectorGenerator.ts) descend through each host's shadowRoot. A plain selector
+  // that matches nothing in the document is also tried inside every open shadow root.
+  // Self-contained copies live in each injected function; keep them identical.
+  const deepQueryAll = (sel: string): Element[] => {
+    const parts = sel.split(" >>> ");
+    let scopes: ParentNode[] = [document];
+    for (let i = 0; i < parts.length; i++) {
+      const next: Element[] = [];
+      for (const scope of scopes) next.push(...Array.from(scope.querySelectorAll(parts[i] as string)));
+      if (i === parts.length - 1) {
+        if (next.length > 0 || parts.length > 1) return next;
+        break;
+      }
+      scopes = next.map((e) => e.shadowRoot).filter((r): r is ShadowRoot => !!r);
+    }
+    const found: Element[] = [];
+    const visit = (root: ParentNode): void => {
+      for (const e of Array.from(root.querySelectorAll("*"))) {
+        const shadow = e.shadowRoot;
+        if (!shadow) continue;
+        found.push(...Array.from(shadow.querySelectorAll(sel)));
+        visit(shadow);
+      }
+    };
+    visit(document);
+    return found;
+  };
+
   const defaultTimeoutMs = 5_000;
   const findByLocator = (loc: LocatorSpec): Element | null => {
-    if (loc.kind === "css") return document.querySelector(loc.selector);
+    if (loc.kind === "css") return deepQueryAll(loc.selector)[0] ?? null;
     return document.evaluate(
       loc.expression,
       document,
@@ -1263,7 +1348,7 @@ async function runScrollCommand(raw: unknown): Promise<Omit<ScrollResult, "tabId
   };
 
   if (typeof params.selector === "string") {
-    const el = document.querySelector(params.selector);
+    const el = deepQueryAll(params.selector)[0];
     if (!el) throw new Error(`element not found: ${params.selector}`);
     el.scrollIntoView({ block: "center", inline: "center" });
   } else if (params.locator) {
@@ -1717,9 +1802,8 @@ export const handlers: Record<string, Handler> = {
       const entry = await lookupUidEntry(tabId, p.uid);
       selector = entry.css;
       frameId = entry.frameId;
-    } else if (!p.locator) {
-      throw new Error("uid or locator is required");
     }
+    // No target at all: only bring the tab forward (a trusted key press with no element).
     const tab = await browser.tabs.get(tabId);
     if (p.activate) {
       if (tab.windowId !== undefined) await browser.windows.update(tab.windowId, { focused: true });
@@ -1734,7 +1818,10 @@ export const handlers: Record<string, Handler> = {
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    const page = await executeInMain<TrustedPointResult>(
+    const page: TrustedPointResult =
+      selector === null && !p.locator
+        ? { ok: true }
+        : await executeInMain<TrustedPointResult>(
       tabId,
       locateForTrustedInput,
       [{ selector, locator: p.locator ?? null, scroll: p.scroll, timeoutMs: p.timeoutMs ?? 5_000 }],

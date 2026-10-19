@@ -7,6 +7,8 @@
 //       -> {"bundleId":..., "pid":...} of the frontmost app
 //   zen-mcp-input click --x <css px> --y <css px> --dpr <devicePixelRatio>
 //                       --expect-bundle <bundle id> [--restore-pid <pid>]
+//   zen-mcp-input key --key <name> [--mods cmd,shift,alt,ctrl]
+//                     --expect-bundle <bundle id> [--restore-pid <pid>]
 //       -> {"ok":true,...} or {"ok":false,"reason":...}; exit 0 either way, 2 on bad usage
 //
 // x/y are the page's screen coordinates in CSS px (mozInnerScreenX + clientX). macOS events
@@ -83,10 +85,8 @@ if command == "front" {
     exit(0)
 }
 
-guard command == "click" else { FileHandle.standardError.write("unknown command\n".data(using: .utf8)!); exit(2) }
-guard let xs = args["x"], let ys = args["y"], let x = Double(xs), let y = Double(ys),
-      let dpr = Double(args["dpr"] ?? ""), dpr > 0, let expect = args["expect-bundle"] else {
-    FileHandle.standardError.write("click needs --x --y --dpr --expect-bundle\n".data(using: .utf8)!)
+guard command == "click" || command == "key", let expect = args["expect-bundle"] else {
+    FileHandle.standardError.write("unknown command, or --expect-bundle missing\n".data(using: .utf8)!)
     exit(2)
 }
 
@@ -96,6 +96,67 @@ if !AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedVal
     refuse("accessibility_not_granted", [
         "hint": "Grant Accessibility to \(CommandLine.arguments[0]) in System Settings > Privacy & Security > Accessibility, then retry.",
     ])
+}
+
+func handBackFocus(from front: NSRunningApplication) -> Bool {
+    guard let rp = args["restore-pid"], let pid = Int32(rp), pid > 0, pid != front.processIdentifier,
+          let app = NSRunningApplication(processIdentifier: pid) else { return false }
+    usleep(150_000)
+    return app.activate()
+}
+
+if command == "key" {
+    // US-layout virtual key codes. Named keys first, then single characters.
+    let named: [String: CGKeyCode] = [
+        "enter": 36, "return": 36, "escape": 53, "esc": 53, "tab": 48, "space": 49, " ": 49,
+        "backspace": 51, "delete": 117, "arrowup": 126, "up": 126, "arrowdown": 125, "down": 125,
+        "arrowleft": 123, "left": 123, "arrowright": 124, "right": 124, "home": 115, "end": 119,
+        "pageup": 116, "pagedown": 121,
+    ]
+    let chars: [Character: CGKeyCode] = [
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11,
+        "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
+        "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31,
+        "u": 32, "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42,
+        ",": 43, "/": 44, "n": 45, "m": 46, ".": 47, "`": 50,
+    ]
+    let name = (args["key"] ?? "").lowercased()
+    guard let code = named[name] ?? (name.count == 1 ? chars[name.first!] : nil) else {
+        refuse("unknown_key", ["key": name])
+    }
+    var flags = CGEventFlags()
+    let mods = Set((args["mods"] ?? "").lowercased().split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    for m in mods {
+        switch m {
+        case "cmd", "meta": flags.insert(.maskCommand)
+        case "shift": flags.insert(.maskShift)
+        case "alt", "option": flags.insert(.maskAlternate)
+        case "ctrl", "control": flags.insert(.maskControl)
+        default: refuse("unknown_modifier", ["modifier": m])
+        }
+    }
+    // Quitting the browser or force-quitting apps is never what an agent should do with one key.
+    if flags.contains(.maskCommand) && (name == "q" || (flags.contains(.maskAlternate) && code == 53)) {
+        refuse("refused_combo", ["key": name, "mods": args["mods"] ?? ""])
+    }
+    guard let front = frontmost(), front.bundleIdentifier == expect else {
+        refuse("wrong_frontmost_app", ["frontmost": frontmost()?.bundleIdentifier ?? ""])
+    }
+    let src = CGEventSource(stateID: .hidSystemState)
+    for down in [true, false] {
+        let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: down)!
+        e.flags = flags
+        e.post(tap: .cghidEventTap)
+        usleep(30_000)
+    }
+    emit(["ok": true, "restoredFocus": handBackFocus(from: front)])
+    exit(0)
+}
+
+guard let xs = args["x"], let ys = args["y"], let x = Double(xs), let y = Double(ys),
+      let dpr = Double(args["dpr"] ?? ""), dpr > 0 else {
+    FileHandle.standardError.write("click needs --x --y --dpr\n".data(using: .utf8)!)
+    exit(2)
 }
 
 // CSS px -> points. Pick the screen whose (points) frame contains the converted point.
@@ -161,10 +222,4 @@ post(.leftMouseUp)
 usleep(60_000)
 if let r = restore { CGWarpMouseCursorPosition(r) }
 
-var restored = false
-if let rp = args["restore-pid"], let pid = Int32(rp), pid > 0, pid != front.processIdentifier,
-   let app = NSRunningApplication(processIdentifier: pid) {
-    usleep(150_000)
-    restored = app.activate()
-}
-emit(["ok": true, "points": ["x": target.x, "y": target.y], "restoredFocus": restored])
+emit(["ok": true, "points": ["x": target.x, "y": target.y], "restoredFocus": handBackFocus(from: front)])

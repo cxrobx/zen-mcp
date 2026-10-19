@@ -14,7 +14,14 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type LocatorSpec, Methods, type TrustedPointResult } from "@zen-mcp/shared";
+import {
+  type GetPageResult,
+  type LocatorSpec,
+  Methods,
+  type PageInfo,
+  type PagesListResult,
+  type TrustedPointResult,
+} from "@zen-mcp/shared";
 import type { DaemonClient } from "./daemon-client.js";
 import { ZenToolError } from "./errors.js";
 
@@ -62,9 +69,30 @@ export interface TrustedClickResult {
   url: string;
   title: string;
   restoredFocus: boolean;
+  /** Tabs or popup windows that appeared during the click (a `window.open`, a `_blank` link). */
+  opened: PageInfo[];
 }
 
-function refusal(where: string, r: TrustedPointResult): ZenToolError {
+// Tab ids are dense and increasing, so whatever a click opens gets an id above the highest
+// one that existed before it, in any window or Zen workspace. includeHidden is what reaches
+// the other workspaces; it costs one id probe pass, acceptable for an opt-in action.
+async function highestTabId(daemon: DaemonClient): Promise<number> {
+  const r = await daemon.call<PagesListResult>(Methods.PagesList, { includeHidden: true });
+  return r.pages.reduce((max, p) => Math.max(max, p.tabId), 0);
+}
+
+const OPENED_PROBE = 6;
+
+async function tabsOpenedAfter(daemon: DaemonClient, above: number): Promise<PageInfo[]> {
+  const found: PageInfo[] = [];
+  for (let id = above + 1; id <= above + OPENED_PROBE; id++) {
+    const r = await daemon.call<GetPageResult>(Methods.PagesGet, { tabId: id }).catch(() => null);
+    if (r?.page) found.push(r.page);
+  }
+  return found;
+}
+
+function refusal(where: string, r: TrustedPointResult, action: "click" | "key" = "click"): ZenToolError {
   const why =
     r.reason === "covered"
       ? `something else is painted over it (${r.coveredBy ?? "?"})`
@@ -79,7 +107,7 @@ function refusal(where: string, r: TrustedPointResult): ZenToolError {
               : (r.reason ?? "unknown");
   return new ZenToolError(
     r.reason === "not_found" ? "NOT_FOUND" : "STALE",
-    `trusted click refused at ${where}: ${why}. Nothing was clicked.`,
+    `trusted ${action} refused at ${where}: ${why}. Nothing was ${action === "click" ? "clicked" : "pressed"}.`,
   );
 }
 
@@ -90,6 +118,7 @@ export async function trustedClick(
   timeoutMs?: number,
 ): Promise<TrustedClickResult> {
   const before = await runHelper(["front"]);
+  const highestBefore = await highestTabId(daemon);
   const priorPid = typeof before.pid === "number" ? before.pid : 0;
   const restorePid = before.bundleId === ZEN_BUNDLE_ID ? 0 : priorPid;
 
@@ -140,13 +169,68 @@ export async function trustedClick(
       hint,
     );
   }
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await new Promise((resolve) => setTimeout(resolve, 600));
   return {
     ...(check.matchedTag ? { matchedTag: check.matchedTag } : {}),
     url: check.url ?? "",
     title: check.title ?? "",
     restoredFocus: fired.restoredFocus === true,
+    opened: await tabsOpenedAfter(daemon, highestBefore),
   };
+}
+
+export interface TrustedKeyResult {
+  url: string;
+  title: string;
+  restoredFocus: boolean;
+}
+
+/**
+ * One real key press (or combo) into the tab. With a target, a trusted click on it first,
+ * which is how a person focuses a field; without one, the tab is only brought to the front
+ * and the key goes to whatever already has focus there. Refused combos: Cmd+Q, Cmd+Opt+Esc.
+ */
+export async function trustedKey(
+  daemon: DaemonClient,
+  tabId: number,
+  key: string,
+  mods: string[],
+  target?: TrustedTarget,
+  timeoutMs?: number,
+): Promise<TrustedKeyResult> {
+  const before = await runHelper(["front"]);
+  const restorePid = before.bundleId === ZEN_BUNDLE_ID ? 0 : typeof before.pid === "number" ? before.pid : 0;
+  let page: TrustedPointResult = { ok: false };
+  if (target) {
+    await trustedClick(daemon, tabId, target, timeoutMs);
+  }
+  for (let attempt = 0; attempt < 4; attempt++) {
+    page = await daemon.call<TrustedPointResult>(Methods.DomTrustedPoint, {
+      tabId,
+      activate: true,
+      scroll: false,
+    });
+    if (page.ok) break;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  if (!page.ok) throw refusal("prepare", page, "key");
+  const fired = await runHelper([
+    "key",
+    "--key", key,
+    ...(mods.length ? ["--mods", mods.join(",")] : []),
+    "--expect-bundle", ZEN_BUNDLE_ID,
+    ...(restorePid ? ["--restore-pid", String(restorePid)] : []),
+  ]);
+  if (fired.ok !== true) {
+    const reason = String(fired.reason ?? "unknown");
+    throw new ZenToolError(
+      reason === "accessibility_not_granted" ? "BAD_PERMS" : reason === "wrong_frontmost_app" ? "STALE" : "BAD_INPUT",
+      `trusted key refused by the helper: ${reason}${fired.frontmost ? ` (frontmost: ${String(fired.frontmost)})` : ""}. Nothing was pressed.`,
+      typeof fired.hint === "string" ? fired.hint : undefined,
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return { url: page.url ?? "", title: page.title ?? "", restoredFocus: fired.restoredFocus === true };
 }
 
 /** XPath string literal for arbitrary text (XPath 1.0 has no escapes). */

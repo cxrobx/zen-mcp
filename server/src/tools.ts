@@ -46,7 +46,7 @@ import { ZenToolError } from "./errors.js";
 import { type FeedbackOptions, feedbackLine, truncateOneLine } from "./feedback.js";
 import { continueCursor, withResponseBudget } from "./response-budget.js";
 import { parseLocator } from "./locator.js";
-import { type TrustedClickResult, trustedClick, xpathLiteral } from "./trusted.js";
+import { type TrustedClickResult, trustedClick, trustedKey, xpathLiteral } from "./trusted.js";
 import {
   GOAL_DEFAULT_MAX_STEPS,
   GOAL_DEFAULT_MIN_CONFIDENCE,
@@ -566,8 +566,12 @@ const TRUSTED_DESCRIPTION =
   "Opt-in: post ONE real OS-level click (isTrusted: true) instead of a synthetic one, for controls that ignore synthetic events (Material dropdowns, a button that opens a popup window). It brings this tab and its window to the front, moves the real cursor for a moment and puts it back, and hands focus back to the app that had it. It refuses, clicking nothing, if the element is covered, moves, or Zen is not frontmost. Needs the native helper (native/build.sh) and macOS Accessibility. Leave unset for normal background use.";
 
 function trustedText(what: string, r: TrustedClickResult): string {
-  return `trusted click on ${what}${r.matchedTag ? ` <${r.matchedTag.toLowerCase()}>` : ""}; page: ${r.url}${r.restoredFocus ? " (focus handed back)" : ""}`;
+  const opened = r.opened.map((p) => `\nopened: tabId=${p.tabId} ${p.url} "${p.title}"`).join("");
+  return `trusted click on ${what}${r.matchedTag ? ` <${r.matchedTag.toLowerCase()}>` : ""}; page: ${r.url}${r.restoredFocus ? " (focus handed back)" : ""}${opened}`;
 }
+
+const TRUSTED_KEY_DESCRIPTION =
+  "Opt-in: post ONE real OS-level key press (isTrusted: true), so the browser's own handling runs too: Tab moves focus, Enter submits, ArrowDown/Enter drive a listbox. With selector, the element gets a trusted click first (that is how a person focuses it); without, the key goes to whatever has focus in this tab. Same costs and refusals as trusted click; Cmd+Q and Cmd+Opt+Esc are refused. Leave unset for normal background use.";
 
 function okWithFeedback(text: string, r: InteractionResult, opts?: FeedbackOptions): ToolResponse {
   return withNavMeta(ok(`${text}${feedbackLine(r, opts)}`), {
@@ -2320,11 +2324,25 @@ export function registerTools(
         keys: z.string(),
         selector: z.string().optional(),
         timeoutMs: z.number().int().positive().optional(),
+        trusted: z.boolean().optional().describe(TRUSTED_KEY_DESCRIPTION),
       },
     },
-    async ({ pageIdx, tabId, expectTabSet, keys, selector, timeoutMs }) => {
+    async ({ pageIdx, tabId, expectTabSet, keys, selector, timeoutMs, trusted }) => {
       try {
         const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
+        if (trusted) {
+          const parts = keys.split("+").map((k: string) => k.trim()).filter(Boolean);
+          const key = parts.pop() ?? "";
+          const r = await trustedKey(
+            daemon,
+            page.tabId,
+            key,
+            parts,
+            selector ? { locator: toLocator(selector) } : undefined,
+            timeoutMs,
+          );
+          return ok(`trusted key ${keys}${selector ? ` on ${selector}` : ""}; page: ${r.url}${r.restoredFocus ? " (focus handed back)" : ""}`);
+        }
         const target = selector
           ? { kind: "locator" as const, locator: toLocator(selector) }
           : { kind: "active" as const };

@@ -19,6 +19,19 @@ function tail(secret: string): string {
   return secret.slice(-4);
 }
 
+// An RSA PUBLIC key in base64 DER (SubjectPublicKeyInfo) opens with a fixed header: the
+// rsaEncryption OID then a BIT STRING. DNS shows these openly (a DKIM record's `p=` value, as
+// on Google Admin's "Authenticate email" page, which got screenshots blurred). A private key
+// (PKCS#8 `MIIEv…AgEAMA0G…` or PKCS#1 `MIIEp…AgEAAoIB…`) never matches either shape.
+const PUBLIC_KEY_DER = [
+  /^MI[A-Za-z0-9]{2}IjANBgkqhkiG9w0BAQEFAAO/, // 2048 / 4096-bit RSA
+  /^MIGfMA0GCSqGSIb3DQEBAQUAA4GNAD/, // 1024-bit RSA
+];
+
+function isPublicKeyDer(body: string): boolean {
+  return PUBLIC_KEY_DER.some((re) => re.test(body));
+}
+
 interface Rule {
   re: RegExp;
   mask: (match: string, ...groups: string[]) => string;
@@ -84,7 +97,7 @@ const RULES: Rule[] = [
   {
     re: /(secret|token|key)([^\n]{0,40}?)(?<![A-Za-z0-9_-])([A-Za-z0-9]{32,})(?![A-Za-z0-9_-])/gi,
     mask: (m, word, between, body) =>
-      /[0-9]/.test(body) ? `${word}${between}${MASK}${tail(body)}` : m,
+      /[0-9]/.test(body) && !isPublicKeyDer(body) ? `${word}${between}${MASK}${tail(body)}` : m,
   },
 ];
 

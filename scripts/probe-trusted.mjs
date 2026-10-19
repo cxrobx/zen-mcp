@@ -32,6 +32,9 @@ const FIXTURE_HTML = `<!doctype html>
     <div id="menu"><div role="option" data-value="a">Alpha</div><div role="option" data-value="b">Beta</div></div></div>
   <div><button id="popup-btn" type="button">Open popup</button> <span id="popup-result">initial</span></div>
   <div><input id="controlled" aria-label="Controlled input" placeholder="controlled"></div>
+  <div><input id="keys" aria-label="Key field" placeholder="keys"> <span id="key-result">initial</span>
+    <input id="after-tab" aria-label="After tab"></div>
+  <shadow-panel id="panel"></shadow-panel>
 <script>
   const out = (id, v) => { document.getElementById(id).textContent = v; };
   document.getElementById('trusted-btn').addEventListener('click', (e) => out('trusted-result', e.isTrusted ? 'trusted' : 'synthetic'));
@@ -56,6 +59,18 @@ const FIXTURE_HTML = `<!doctype html>
   const ctl = document.getElementById('controlled'); let model = '';
   ctl.addEventListener('input', (e) => { if (e instanceof InputEvent) model = ctl.value; });
   setInterval(() => { if (ctl.value !== model) ctl.value = model; }, 20);
+  document.getElementById('keys').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') out('key-result', e.isTrusted ? 'trusted' : 'synthetic');
+  });
+  // Open shadow root holding real controls, like Impact's React app.
+  customElements.define('shadow-panel', class extends HTMLElement {
+    connectedCallback() {
+      const root = this.attachShadow({ mode: 'open' });
+      root.innerHTML = '<p>Shadow account name</p><input id="acct" aria-label="Account name">' +
+        '<button id="shadow-btn" type="button">Shadow continue</button><span id="shadow-out">initial</span>';
+      root.getElementById('shadow-btn').addEventListener('click', () => { root.getElementById('shadow-out').textContent = 'clicked'; });
+    }
+  });
 </script></body></html>`;
 
 function spawnLogged(name, cmd, args, opts = {}) {
@@ -197,8 +212,37 @@ async function main() {
     check("trusted click is seen as trusted", has(await read(tabId, "document.getElementById('trusted-result').textContent"), "trusted"));
     console.log(await mcp.callTool("select_option", { tabId, selector: "#lb", by: "label", value: "Beta", trusted: true }));
     check("trusted select_option picks Beta", has(await read(tabId, "document.getElementById('lb').dataset.value || ''"), "b"));
-    console.log(await mcp.callTool("click", { tabId, selector: "#popup-btn", trusted: true }));
+    const popupText = await mcp.callTool("click", { tabId, selector: "#popup-btn", trusted: true });
+    console.log(popupText);
     check("trusted click opens a popup", has(await read(tabId, "document.getElementById('popup-result').textContent"), "opened"));
+    check("trusted click names the tab it opened", /opened: tabId=\d+ http:\/\/127\.0\.0\.1:\d+\/popup/.test(popupText), popupText.split("\n").slice(1).join(" | "));
+
+    // Trusted keys: the page sees isTrusted, and the browser's own Tab handling moves focus.
+    await mcp.callTool("press_key", { tabId, keys: "ArrowDown", selector: "#keys" });
+    check("synthetic key is seen as synthetic", has(await read(tabId, "document.getElementById('key-result').textContent"), "synthetic"));
+    console.log(await mcp.callTool("press_key", { tabId, keys: "ArrowDown", selector: "#keys", trusted: true }));
+    check("trusted key is seen as trusted", has(await read(tabId, "document.getElementById('key-result').textContent"), "trusted"));
+    await mcp.callTool("press_key", { tabId, keys: "Tab", trusted: true });
+    check("trusted Tab moves focus", has(await read(tabId, "document.activeElement && document.activeElement.id"), "after-tab"));
+    const quit = await mcp.callTool("press_key", { tabId, keys: "Cmd+Q", trusted: true }).then(() => "pressed", (e) => String(e.message));
+    check("trusted Cmd+Q is refused", quit.includes("refused_combo"), quit.slice(0, 120));
+
+    // Open shadow DOM: snapshot, find_by_text, click_by_uid and fill_by_uid reach inside.
+    const snap2 = await mcp.callTool("take_snapshot", { tabId });
+    const btnUid = snap2.split("\n").find((l) => l.includes("Shadow continue"))?.match(/#([\w_]+)/)?.[1];
+    const acctUid = snap2.split("\n").find((l) => l.includes("Account name"))?.match(/#([\w_]+)/)?.[1];
+    check("take_snapshot lists controls inside an open shadow root", !!btnUid && !!acctUid);
+    if (btnUid) await mcp.callTool("click_by_uid", { tabId, uid: btnUid });
+    check("click_by_uid reaches a shadow DOM button", has(await read(tabId, "document.getElementById('panel').shadowRoot.getElementById('shadow-out').textContent"), "clicked"));
+    if (acctUid) await mcp.callTool("fill_by_uid", { tabId, uid: acctUid, value: "Acme" });
+    check("fill_by_uid reaches a shadow DOM input", has(await read(tabId, "document.getElementById('panel').shadowRoot.getElementById('acct').value"), "Acme"));
+    // find_by_text takes its own snapshot, which replaces the uids above, so it runs after them.
+    const found = await mcp.callTool("find_by_text", { tabId, text: "Shadow continue" }).catch((e) => String(e.message));
+    check("find_by_text finds shadow DOM text", found.includes("Shadow continue"), found.split("\n")[0]);
+    await read(tabId, "(document.getElementById('panel').shadowRoot.getElementById('shadow-out').textContent = 'reset')");
+    const viaCss = await mcp.callTool("click", { tabId, selector: "#shadow-btn" }).then(() => "ok", (e) => String(e.message));
+    check("a plain css locator falls back into open shadow roots",
+      viaCss === "ok" && has(await read(tabId, "document.getElementById('panel').shadowRoot.getElementById('shadow-out').textContent"), "clicked"), viaCss);
 
     // Refusal: an element that is not visible must not be clicked.
     const refused = await mcp.callTool("click", { tabId, selector: "#menu [role=option]", trusted: true, timeoutMs: 500 }).then(
