@@ -323,9 +323,11 @@ export interface TrustedPointParams {
 
 export interface TrustedPointResult {
   ok: boolean;
-  /** not_found | not_visible | covered | tab_not_active | window_not_focused */
+  /** not_found | not_visible | covered | ambiguous | tab_not_active | window_not_focused */
   reason?: string;
   coveredBy?: string;
+  /** With reason "ambiguous": how many elements a uid's snapshot selector matched. */
+  matches?: number;
   screenX?: number;
   screenY?: number;
   devicePixelRatio?: number;

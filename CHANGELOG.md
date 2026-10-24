@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.26 — a uid acts on its own element (2026-10-24, T315)
+
+- Snapshot CSS selectors are unique per uid. A `[data-testid]` (or role/aria-label, or a
+  duplicated `id`) step that a sibling also matches now gets `:nth-of-type`, and the finished
+  selector must select exactly its element, else a positional `body > …` path is returned.
+  Before, every row of a form sharing a test id got one selector, so `fill_by_uid`,
+  `fill_form_by_uid` and trusted `click_by_uid` all hit the first row.
+- Every uid action (click, hover, fill, fill_form, drag, scroll, trusted click) refuses a
+  selector that matches more than one element at action time (`ambiguous selector`), instead
+  of acting on the first match.
+- New live probe `scripts/probe-uid-selectors.mjs` (top frame + same-origin iframe fixture).
+
 All notable changes to this project will be documented here. Versions track the
 extension manifest and the AMO-signed XPI artifacts. Server, daemon, and shared
 package versions move together with the extension.

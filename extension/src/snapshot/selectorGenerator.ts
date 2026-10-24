@@ -24,6 +24,11 @@ export const SHADOW_SEPARATOR = ' >>> ';
  * Prefers stable identifiers: id, data-testid, then falls back to nth-of-type.
  * An element inside an open shadow root gets its host's selector, SHADOW_SEPARATOR, then a
  * selector relative to that shadow root.
+ *
+ * Every uid action re-queries this selector and acts on the match, so it must match exactly
+ * this element (T315: two inputs under sibling `div[data-testid]` wrappers got one selector
+ * and a fill landed in the wrong field). `localCssSelector` therefore verifies its result and
+ * falls back to a purely positional path when the readable one is not unique.
  */
 export function generateCssSelector(el: Element): string {
   const root = el.getRootNode();
@@ -34,53 +39,95 @@ export function generateCssSelector(el: Element): string {
 }
 
 function localCssSelector(el: Element): string {
+  const readable = attributeCssSelector(el);
+  return selectsOnly(readable, el) ? readable : positionalCssSelector(el);
+}
+
+/** True when `selector`, queried in el's own root, matches el and nothing else. */
+export function selectsOnly(selector: string, el: Element): boolean {
+  const root = el.getRootNode() as ParentNode;
+  try {
+    const found = root.querySelectorAll(selector);
+    return found.length === 1 && found[0] === el;
+  } catch {
+    return false; // a truncated or badly escaped segment is not a valid selector
+  }
+}
+
+function countMatches(root: ParentNode, selector: string): number {
+  try {
+    return root.querySelectorAll(selector).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Append `:nth-of-type(n)` to `step` when another child of el's parent also matches it.
+ * An attribute such as `[data-testid="field"]` often repeats on every row of a form, so a
+ * step built from one says nothing about WHICH sibling it is.
+ */
+function withSiblingIndex(el: Element, step: string): string {
+  const siblings = el.parentNode ? Array.from((el.parentNode as ParentNode).children) : [];
+  let alike = 0;
+  for (const sibling of siblings) {
+    try {
+      if (sibling.matches(step)) alike++;
+    } catch {
+      return step;
+    }
+  }
+  if (alike <= 1) return step;
+  return step + `:nth-of-type(${nthOfType(el)})`;
+}
+
+function nthOfType(el: Element): number {
+  let nth = 1;
+  for (let sib = el.previousElementSibling; sib; sib = sib.previousElementSibling) {
+    if (sib.nodeName === el.nodeName) nth++;
+  }
+  return nth;
+}
+
+function attributeCssSelector(el: Element): string {
+  const root = el.getRootNode() as ParentNode;
   const path: string[] = [];
   let current: Element | null = el;
 
   while (current?.nodeType === Node.ELEMENT_NODE) {
     let selector = current.nodeName.toLowerCase();
 
-    // Check for preferred ID attributes. Native IDs are terminal; test IDs often repeat in lists.
-    let hasId = false;
-    let continueWithParent = false;
+    // Preferred ID attributes. One that is unique in the root ends the path; test IDs often
+    // repeat in lists (and real pages duplicate ids), so a repeated one gets a sibling index
+    // and the path continues to the parent for context.
+    let idStep: string | null = null;
     for (const idAttr of PREFERRED_ID_ATTRS) {
       const value = current.getAttribute(idAttr);
       if (value) {
-        const candidate =
+        idStep =
           idAttr === 'id'
             ? selector + '#' + CSS.escape(value)
             : selector + `[${idAttr}="${escapeCssAttributeValue(value)}"]`;
-        const isTerminal =
-          idAttr === 'id' ||
-          ((current.getRootNode() as ParentNode).querySelectorAll?.(candidate).length ?? 0) === 1;
-        if (idAttr === 'id') {
-          selector += '#' + CSS.escape(value);
-        } else {
-          selector += `[${idAttr}="${escapeCssAttributeValue(value)}"]`;
-        }
-        path.unshift(selector);
-        hasId = true;
-        if (!isTerminal) {
-          continueWithParent = true;
-        }
         break;
       }
     }
 
-    if (hasId) {
-      if (continueWithParent) {
-        current = current.parentElement;
-        continue;
+    if (idStep) {
+      if (countMatches(root, idStep) === 1) {
+        path.unshift(idStep);
+        break; // unique in the root, stop here
       }
-      break; // ID is unique, stop here
+      path.unshift(withSiblingIndex(current, idStep));
+      current = current.parentElement;
+      continue;
     }
 
     // Check for aria-label + role combination (often stable)
     const ariaLabel = current.getAttribute('aria-label');
     const role = current.getAttribute('role');
     if (ariaLabel && role) {
-      selector += `[role="${role}"][aria-label="${escapeCssAttributeValue(ariaLabel)}"]`;
-      path.unshift(selector);
+      selector += `[role="${escapeCssAttributeValue(role)}"][aria-label="${escapeCssAttributeValue(ariaLabel)}"]`;
+      path.unshift(withSiblingIndex(current, selector));
       // Continue to parent for context
       current = current.parentElement;
       continue;
@@ -89,20 +136,8 @@ function localCssSelector(el: Element): string {
     // Fall back to nth-of-type
     const siblings = current.parentElement?.children;
     if (siblings && siblings.length > 1) {
-      let nth = 1;
-      for (let i = 0; i < siblings.length; i++) {
-        const sibling = siblings[i];
-        if (!sibling) {
-          continue;
-        }
-        if (sibling === current) {
-          break;
-        }
-        if (sibling.nodeName === current.nodeName) {
-          nth++;
-        }
-      }
-      if (nth > 1 || (siblings.length > 1 && siblings[0] !== current)) {
+      const nth = nthOfType(current);
+      if (nth > 1 || siblings[0] !== current) {
         selector += `:nth-of-type(${nth})`;
       }
     }
@@ -117,6 +152,32 @@ function localCssSelector(el: Element): string {
     }
   }
 
+  return path.join(' > ');
+}
+
+/**
+ * Tag names and `:nth-of-type` only, every step a child combinator, anchored at `body` (or the
+ * top of a shadow root). Unique under `body` by construction, and immune to attribute values
+ * that repeat, get truncated or fail to escape. Less readable, so only used when the readable
+ * selector fails `selectsOnly`.
+ */
+function positionalCssSelector(el: Element): string {
+  const path: string[] = [];
+  let current: Element | null = el;
+  while (current) {
+    const tag = current.localName;
+    if (tag === 'body' || tag === 'html') {
+      path.unshift(tag);
+      break;
+    }
+    let step = CSS.escape(tag);
+    const siblings = current.parentNode ? Array.from((current.parentNode as ParentNode).children) : [];
+    if (siblings.filter((s) => s.localName === tag).length > 1) {
+      step += `:nth-of-type(${nthOfType(current)})`;
+    }
+    path.unshift(step);
+    current = current.parentElement;
+  }
   return path.join(' > ');
 }
 

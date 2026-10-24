@@ -672,8 +672,17 @@ async function runInteractionCommand(raw: unknown): Promise<Record<string, unkno
     throw new Error(`element not found: ${locatorLabel(loc)} after ${Date.now() - start}ms`);
   };
 
+  // `selector` is a uid's snapshot selector, which named exactly one element when the
+  // snapshot was taken. Several matches now means acting on [0] could hit the wrong element
+  // (T315: a fill landing in a sibling field), so refuse rather than guess.
   const findBySelector = (selector: string): Element => {
-    const el = deepQueryAll(selector)[0];
+    const matches = deepQueryAll(selector);
+    if (matches.length > 1) {
+      throw new Error(
+        `ambiguous selector: ${matches.length} elements match this uid's selector, so nothing was done (take a fresh snapshot): ${selector}`,
+      );
+    }
+    const el = matches[0];
     if (!el) throw new Error(`element not found: ${selector}`);
     return el;
   };
@@ -1239,6 +1248,9 @@ async function locateForTrustedInput(raw: unknown): Promise<TrustedPointResult> 
   let anyMatch = false;
   while (true) {
     const found = all();
+    // A uid selector named exactly one element at snapshot time; several now means the real
+    // click could land on the wrong one (T315). Locators keep first-visible-match.
+    if (p.selector && found.length > 1) return { ok: false, reason: "ambiguous", matches: found.length };
     anyMatch = anyMatch || found.length > 0;
     el = found.find(shown);
     if (el || Date.now() > deadline) break;
@@ -1348,7 +1360,14 @@ async function runScrollCommand(raw: unknown): Promise<Omit<ScrollResult, "tabId
   };
 
   if (typeof params.selector === "string") {
-    const el = deepQueryAll(params.selector)[0];
+    // A uid's snapshot selector: several matches would scroll to a guess (T315).
+    const matches = deepQueryAll(params.selector);
+    if (matches.length > 1) {
+      throw new Error(
+        `ambiguous selector: ${matches.length} elements match this uid's selector (take a fresh snapshot): ${params.selector}`,
+      );
+    }
+    const el = matches[0];
     if (!el) throw new Error(`element not found: ${params.selector}`);
     el.scrollIntoView({ block: "center", inline: "center" });
   } else if (params.locator) {

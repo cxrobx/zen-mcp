@@ -104,7 +104,9 @@ function refusal(where: string, r: TrustedPointResult, action: "click" | "key" =
             ? "the tab is not the active one"
             : r.reason === "window_not_focused"
               ? "the browser window is not focused"
-              : (r.reason ?? "unknown");
+              : r.reason === "ambiguous"
+                ? `the uid's selector matches ${r.matches ?? "several"} elements, so the click could land on the wrong one (take a fresh snapshot)`
+                : (r.reason ?? "unknown");
   return new ZenToolError(
     r.reason === "not_found" ? "NOT_FOUND" : "STALE",
     `trusted ${action} refused at ${where}: ${why}. Nothing was ${action === "click" ? "clicked" : "pressed"}.`,
