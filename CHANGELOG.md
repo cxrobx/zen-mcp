@@ -12,9 +12,31 @@
   of acting on the first match.
 - New live probe `scripts/probe-uid-selectors.mjs` (top frame + same-origin iframe fixture).
 
+## Navigation-memory evidence gate (2026-09-30)
+
+- Preserve private path redaction while distinguishing colliding routes with keyed page fingerprints; capture, retrieval, feedback and merge scope use the page identity.
+- Keep existing notes and seeds inspectable as candidates. Automatic hints require a confirmed visible/enabled/checked/count/value outcome on the same page; presence and RPC success alone do not promote advice.
+- Canonicalize new selector claims from observed tools and locators, add transient value checks, and expose candidate/verified counts.
+- Freeze browser-evaluation banks across conditions, use real tool schemas, and verify full add/remove sequences and named table rows with hidden live oracles.
+
+
 All notable changes to this project will be documented here. Versions track the
 extension manifest and the AMO-signed XPI artifacts. Server, daemon, and shared
 package versions move together with the extension.
+
+## Unreleased — page-aware navigation memory and verified feedback
+
+Navigation hints refresh for relevant paths, with bounded caching and deduplication by
+shown note id. An empty first page no longer suppresses knowledge for later destinations.
+`nav_memory_feedback` verifies a live CSS or path assertion before recording a confirmed,
+contradicted, or obsolete outcome. Repeated reports from one retained connection count
+once, negative evidence reduces ranking, and obsolete advice remains inspectable while
+being excluded from automatic hints. History persists without page text or form values.
+
+All merge routes require matching host, kind, path scope and success polarity. Feedback
+notes preserve their ids during consolidation, and one work file cannot reinforce a
+target repeatedly. Added regression coverage, an end-to-end feedback probe, and a
+deterministic memory-on/off evaluation. No extension upgrade is required.
 
 ## Unreleased — expected account per host
 

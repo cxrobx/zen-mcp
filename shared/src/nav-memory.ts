@@ -32,6 +32,9 @@ export interface NavNote {
   host: string;
   registrableDomain: string | null;
   pathGlob: string | null;
+  /** Keyed exact-page identity; redacted path globs are not unique page ids. */
+  pageKey?: string;
+  observation?: { tool: string; locator: string };
   kind: NavNoteKind;
   summary: string;
   detail: string;
@@ -44,6 +47,51 @@ export interface NavNote {
   lastSeenAt: string;
   source: NavNoteSource | null;
   embedding: string | null;
+  /** Explicit, live-verified outcomes, separate from heuristic ETL reinforcement. */
+  feedback?: NavNoteFeedback;
+}
+
+export const NAV_FEEDBACK_OUTCOMES = ["confirmed", "contradicted", "obsolete"] as const;
+export type NavFeedbackOutcome = (typeof NAV_FEEDBACK_OUTCOMES)[number];
+export type NavFeedbackStatus = "active" | "suspect" | "obsolete";
+
+export interface NavFeedbackEvidence {
+  host: string;
+  path: string;
+  pageKey?: string;
+  check: "selector" | "path" | "state";
+  state?: "visible" | "enabled" | "checked" | "count" | "value";
+  target: string;
+  expected: boolean | number;
+  observed: boolean | number;
+}
+
+export interface NavFeedbackRecord {
+  session: string;
+  at: string;
+  outcome: NavFeedbackOutcome;
+  evidence: NavFeedbackEvidence;
+}
+
+export interface NavNoteFeedback {
+  confirmed: number;
+  contradicted: number;
+  obsolete: number;
+  status: NavFeedbackStatus;
+  /** Bounded, structural evidence only; no page prose or free-text explanations. */
+  history: NavFeedbackRecord[];
+}
+
+export interface NavMemoryFeedbackParams {
+  id: string;
+  outcome: NavFeedbackOutcome;
+  evidence: NavFeedbackEvidence;
+}
+
+export interface NavMemoryFeedbackResult {
+  id: string;
+  recorded: boolean;
+  feedback: NavNoteFeedback;
 }
 
 export interface NavEventRecord {
@@ -51,6 +99,7 @@ export interface NavEventRecord {
   tool: string;
   host?: string;
   path?: string;
+  pageKey?: string;
   ok: boolean;
   navigated?: boolean;
   errorCode?: string;
@@ -67,15 +116,17 @@ export interface NavEventRecord {
 export interface NavMemoryQueryParams {
   host: string;
   path?: string;
+  pageKey?: string;
   queryText?: string;
   limit?: number;
   full?: boolean;
+  excludeIds?: string[];
 }
 
 export type NavNoteSummary = Pick<
   NavNote,
   "id" | "host" | "pathGlob" | "kind" | "summary" | "confidence" | "reinforced"
->;
+> & { success?: boolean; feedbackStatus?: NavFeedbackStatus };
 
 export interface NavMemoryQueryResult {
   host: string;
@@ -119,6 +170,8 @@ export interface NavMemoryStatsResult {
   pruned: number;
   droppedEvents: number;
   ollama: { available: boolean | null; lastCheckedAt: string | null };
+  feedback: { confirmed: number; contradicted: number; obsolete: number; suspectNotes: number; obsoleteNotes: number };
+  eligibility: { verifiedNotes: number; candidateNotes: number };
 }
 
 export interface NavMemoryForgetParams {

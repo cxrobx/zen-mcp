@@ -621,6 +621,33 @@ test("goal: expect not met hands back even though Jev said done", async () => {
   assert.equal(calls.click.length, 0);
 });
 
+test("goal: screenshots are supplemental and off/auto/always remain explicit", async () => {
+  for (const [vision, duplicate, expected] of [["off", true, 0], ["auto", false, 0], ["auto", true, 1], ["always", false, 1]]) {
+    const { deps, calls } = harness([home({ elements: [el("u2", "Webhooks", { duplicate })] })], [stepReply({ done: 0.99, choice: "none", probs: { none: 1 } })]);
+    let captures = 0, image;
+    const ask = deps.ask;
+    deps.ask = async (state, questions, pixels) => { image = pixels; return ask(state, questions); };
+    deps.screenshot = async () => { captures++; return "data:image/jpeg;base64,aW1hZ2U="; };
+    await runGoal(deps, { ...OPTS, vision, providerName: "Luna" });
+    assert.equal(captures, expected, vision);
+    assert.equal(image !== undefined, expected === 1);
+    assert.equal(calls.click.length, 0);
+  }
+});
+
+test("goal: navigation during screenshot cannot send pixels or click", async () => {
+  const { deps, calls } = harness([home()], []);
+  deps.screenshot = async () => {
+    deps.page = async () => ({ url: `https://${HOST}/another-page`, title: "Another page" });
+    return "data:image/jpeg;base64,aW1hZ2U=";
+  };
+  const result = await runGoal(deps, { ...OPTS, vision: "always", providerName: "Luna" });
+  assert.equal(result.outcome, "handback");
+  assert.match(result.reason, /page moved during observation/);
+  assert.equal(calls.ask.length, 0);
+  assert.equal(calls.click.length, 0);
+});
+
 test("financial hosts match on registrable domain, subdomains included, lookalikes not", () => {
   for (const host of [
     "dashboard.stripe.com",

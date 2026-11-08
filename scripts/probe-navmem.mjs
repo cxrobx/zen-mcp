@@ -147,8 +147,8 @@ async function main() {
     });
     await new Promise((resolveP) => setTimeout(resolveP, 250));
     const first = text(await tool(mcp, "navigate_page", { pageIdx: 0, url: "https://console.cloud.google.com/auth/clients/test" }));
-    if (!first.startsWith("[nav-memory]")) throw new Error("M1 injection missing");
-    const second = text(await tool(mcp, "navigate_page", { pageIdx: 0, url: "https://console.cloud.google.com/auth/clients/again" }));
+    if (first.startsWith("[nav-memory]")) throw new Error("M1 unverified seed injected");
+    const second = text(await tool(mcp, "navigate_page", { pageIdx: 0, url: "https://console.cloud.google.com/auth/clients/test" }));
     if (second.startsWith("[nav-memory]")) throw new Error("M1 duplicate injection");
     const containers = text(await tool(mcp, "list_containers"));
     if (containers.startsWith("[nav-memory]")) throw new Error("M1 injected into list tool");
@@ -165,8 +165,8 @@ async function main() {
       if (raw.includes(secret)) throw new Error(`M2 leaked planted secret: ${secret}`);
     }
 
-    const etl = await rawCall(token, "navMemory.etlNow", {});
-    if (etl.status !== "processed") throw new Error(`M3 ETL failed: ${JSON.stringify(etl)}`);
+    let etl;
+    do { etl = await rawCall(token, "navMemory.etlNow", {}); if (etl.status === "failed") throw new Error("M3 ETL failed"); } while (etl.status !== "empty");
     mcp = await startMcp(tokenPath);
     const learned = text(await tool(mcp, "get_domain_playbook", { host: "console.cloud.google.com" }));
     if (!learned.includes("fixture form")) throw new Error("M3 learned note missing");
@@ -177,7 +177,7 @@ async function main() {
 
     // Second session on the same host: the distiller now sees the note it wrote
     // last time and reinforces it instead of inventing a fresh phrasing.
-    await tool(mcp, "navigate_page", { pageIdx: 0, url: "https://console.cloud.google.com/auth/clients/second" });
+    await tool(mcp, "navigate_page", { pageIdx: 0, url: "https://console.cloud.google.com/users/secret%40example.com/123456?token=bad" });
     await tool(mcp, "fill", { pageIdx: 0, selector: 'css:input[name="email"]', value: "second@example.com" });
     await new Promise((resolveP) => setTimeout(resolveP, 250));
     mcp.stdin.end();
@@ -192,6 +192,40 @@ async function main() {
     if (stats.notes !== afterFirst.notes) throw new Error(`M5 reinforcement created a duplicate note: ${afterFirst.notes} -> ${stats.notes}`);
     if (stats.etl.merged < 1) throw new Error("M5 merge counter did not move");
     if (stats.done < 2) throw new Error("M5 second work file was not archived");
+
+    const learnedNote = JSON.parse(await readFile(join(navDir, "notes.json"), "utf8")).notes.find(note => note.summary.includes("fixture form"));
+    const feedbackArgs = { tabId: 101, id: learnedNote.id, outcome: "confirmed", check: { selector: 'input[name="email"]', state: "value", value: "fixture" } };
+    const rejected = await tool(mcp, "nav_memory_feedback", { ...feedbackArgs, check: { selector: "#retired", present: true } });
+    if (!rejected.isError) throw new Error("M6 unverified assertion accepted");
+    const obsoleteArgs = { ...feedbackArgs, outcome: "obsolete", check: { selector: "#retired", present: false } };
+    const obsolete = text(await tool(mcp, "nav_memory_feedback", obsoleteArgs));
+    if (!obsolete.includes("status: obsolete")) throw new Error("M6 obsolete feedback missing");
+    const duplicate = text(await tool(mcp, "nav_memory_feedback", obsoleteArgs));
+    if (!duplicate.includes("already recorded")) throw new Error("M6 repeated feedback counted twice");
+    const afterObsolete = JSON.parse(text(await tool(mcp, "nav_memory_stats")));
+    if (afterObsolete.feedback.obsoleteNotes !== 1 || afterObsolete.feedback.obsolete !== 1) throw new Error("M6 outcome counters wrong");
+    const obsoletePlaybook = text(await tool(mcp, "get_domain_playbook", { host: "console.cloud.google.com" }));
+    if (!obsoletePlaybook.includes("feedback: obsolete")) throw new Error("M6 obsolete note is not inspectable");
+    const automatic = text(await tool(mcp, "navigate_page", { tabId: 101, url: "https://console.cloud.google.com/users/secret%40example.com/123456?token=bad" }));
+    if (automatic.includes(learnedNote.id)) throw new Error("M6 obsolete note injected automatically");
+    const recovered = text(await tool(mcp, "nav_memory_feedback", feedbackArgs));
+    if (!recovered.includes("status: active") || !recovered.includes("obsolete: 0")) throw new Error("M6 corrected session verdict failed");
+
+    const independent = await startMcp(tokenPath);
+    try {
+      const another = text(await tool(independent, "nav_memory_feedback", feedbackArgs));
+      if (!another.includes("confirmed: 2")) throw new Error("M6 independent session did not count");
+      await tool(independent, "navigate_page", { tabId: 102, url: "https://console.cloud.google.com/users/secret%40example.com/123456?token=bad" });
+      const wrongHost = await tool(independent, "nav_memory_feedback", { ...feedbackArgs, tabId: 102 });
+      // Both fixture tabs are on the same console initially; move the second
+      // tab to an unrelated host and prove it cannot vote for this note.
+      if (wrongHost.isError) throw new Error("M6 same-host verification failed");
+      await tool(independent, "navigate_page", { tabId: 102, url: "https://example.com/" });
+      const mismatch = await tool(independent, "nav_memory_feedback", { ...feedbackArgs, tabId: 102 });
+      if (!mismatch.isError) throw new Error("M6 cross-host feedback accepted");
+    } finally {
+      independent.stdin.end();
+    }
     const forgotten = text(await tool(mcp, "nav_memory_forget", { host: "console.cloud.google.com" }));
     if (!forgotten.includes("notes=7")) throw new Error(`M4 forget failed: ${forgotten}`);
     const empty = text(await tool(mcp, "get_domain_playbook", { host: "console.cloud.google.com" }));

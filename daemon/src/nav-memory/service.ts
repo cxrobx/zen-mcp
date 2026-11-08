@@ -1,8 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   Methods,
   NAV_NOTE_CAPS,
   NAV_NOTE_KINDS,
+  NAV_FEEDBACK_OUTCOMES,
+  type NavMemoryFeedbackParams,
+  type NavMemoryFeedbackResult,
   type NavEventRecord,
   type NavMemoryEtlNowResult,
   type NavMemoryForgetParams,
@@ -18,6 +21,7 @@ import {
 import {
   containsPromptLikeText,
   isDevHost,
+  matchesPathGlob,
   normalizeHost,
   normalizeSummary,
   normalizeUrl,
@@ -30,9 +34,11 @@ import {
 import { log } from "../log.js";
 import { type DistilledNote, type Distiller, MAX_KNOWN_NOTES } from "./distill.js";
 import { encodeEmbedding, type Embedder, MERGE_SIMILARITY, nearestNote, dot, decodeEmbedding } from "./embeddings.js";
-import { rankNotes, scoreNote } from "./ranking.js";
+import { rankNotes, scoreNote, verifiedForPage } from "./ranking.js";
 import { applySeeds, noteId } from "./seeds.js";
 import { type EtlMutation, JsonNavStore } from "./store.js";
+import { sanitizeEvidence } from "./feedback.js";
+import { mergeCompatible } from "./merge.js";
 
 const MAX_SESSION_EVENTS = 500;
 // Checkpoint before the cap so a long session flushes whole batches instead of
@@ -110,7 +116,9 @@ export class NavMemoryService {
       case Methods.NavMemoryStats:
         return this.stats();
       case Methods.NavMemoryForget:
-        return this.forget(raw);
+        return this.serializedWork(() => this.forget(raw));
+      case Methods.NavMemoryFeedback:
+        return this.serializedWork(() => this.feedback(ctx, raw));
       case Methods.NavMemoryEtlNow:
         if (process.env.ZEN_MCP_NAV_ETL_PROBE !== "1") throw new NavServiceError(-32601, "method not found");
         return this.serializedWork(() => this.processOne());
@@ -128,18 +136,24 @@ export class NavMemoryService {
     const maximum = full ? 50 : 8;
     const limit = Math.min(maximum, Math.max(1, Number.isInteger(p.limit) ? p.limit! : maximum));
     const path = typeof p.path === "string" && p.path.startsWith("/") ? p.path.slice(0, 500) : undefined;
+    const pageKey = typeof p.pageKey === "string" && /^[0-9a-f]{64}$/.test(p.pageKey) ? p.pageKey : undefined;
     const queryText = typeof p.queryText === "string" ? truncateUtf8(redactText(p.queryText), 300) : undefined;
-    return { host, limit, full, ...(path ? { path } : {}), ...(queryText ? { queryText } : {}) };
+    const excludeIds = Array.isArray(p.excludeIds) ? p.excludeIds.slice(0, 500).filter(id => typeof id === "string" && /^[0-9a-f]{64}$/.test(id)) : [];
+    return { host, limit, full, excludeIds, ...(path ? { path } : {}), ...(pageKey ? { pageKey } : {}), ...(queryText ? { queryText } : {}) };
   }
 
   private async query(raw: unknown): Promise<NavMemoryQueryResult> {
     const p = this.parseQuery(raw);
     const domain = registrableDomain(p.host);
-    const allRanked = rankNotes(this.store.allNotes(), {
+    const excluded = new Set(p.excludeIds);
+    const allRanked = rankNotes(this.store.allNotes().filter(note => !excluded.has(note.id)), {
       host: p.host,
       registrableDomain: domain,
       ...(p.path ? { path: p.path } : {}),
       includeOutOfScope: p.full,
+      includeObsolete: p.full,
+      requireOutcome: !p.full,
+      pageKey: p.pageKey,
     }, 50);
     let ranked = allRanked;
     if (p.full && p.queryText && (await this.embedder.isAvailable())) {
@@ -159,6 +173,7 @@ export class NavMemoryService {
       summary: note.summary,
       confidence: note.confidence,
       reinforced: note.reinforced,
+      feedbackStatus: note.feedback?.status,
     }));
     return { host: p.host, registrableDomain: domain, total: allRanked.length, notes };
   }
@@ -210,18 +225,19 @@ export class NavMemoryService {
     this.sessions.delete(connId);
     if (!state || state.events.length === 0) return;
     const endedAt = this.now().toISOString();
-    const byHost = new Map<string, NavEventRecord[]>();
+    const byPage = new Map<string, NavEventRecord[]>();
     for (const event of state.events) {
       if (!event.host) continue;
-      const events = byHost.get(event.host) ?? [];
+      const group = JSON.stringify([event.host, event.pageKey ?? null]);
+      const events = byPage.get(group) ?? [];
       events.push(event);
-      byHost.set(event.host, events);
+      byPage.set(group, events);
     }
-    const logs: NavSessionLog[] = [...byHost.entries()].map(([host, events]) => ({
+    const logs: NavSessionLog[] = [...byPage.values()].map((events) => ({
       schemaVersion: 1,
       workId: randomUUID(),
-      host,
-      registrableDomain: registrableDomain(host),
+      host: events[0]!.host!,
+      registrableDomain: registrableDomain(events[0]!.host!),
       container: state.container,
       startedAt: state.startedAt,
       endedAt,
@@ -278,11 +294,11 @@ export class NavMemoryService {
     }
     try {
       const existing = this.store.allNotes();
-      // The distiller is the only component that can reliably say "same fact",
-      // so it gets the host's current notes and answers with `reinforces`.
+      // Give the distiller compatible page observations to reference by position.
+      // Scope and polarity still constrain every referenced or semantic merge.
       const known = rankNotes(
-        existing.filter((note) => note.host === session.host),
-        { host: session.host, registrableDomain: session.registrableDomain, includeOutOfScope: true },
+        existing.filter((note) => note.host === session.host && note.pageKey === session.events[0]?.pageKey),
+        { host: session.host, registrableDomain: session.registrableDomain, includeOutOfScope: true, includeObsolete: true },
         MAX_KNOWN_NOTES,
       );
       const distilled = await this.distiller.distill(session, known.map(toSummary));
@@ -293,12 +309,12 @@ export class NavMemoryService {
       const ollama = candidates.length > 0 && await this.embedder.isAvailable();
       for (const { item, note } of candidates) {
         const reinforced = resolveReinforces(item.reinforces, known);
-        if (reinforced) {
+        if (reinforced && mergeCompatible(reinforced, note)) {
           mutations.push({ note, mergeIntoId: reinforced.id });
           continue;
         }
         const exact = existing.find((entry) => entry.id === note.id);
-        if (exact) {
+        if (exact && mergeCompatible(exact, note)) {
           mutations.push({ note, mergeIntoId: exact.id });
           continue;
         }
@@ -307,8 +323,9 @@ export class NavMemoryService {
             const [vector] = await this.embedder.embedDocuments([`${note.summary}\n${note.detail}`]);
             if (vector) {
               note.embedding = encodeEmbedding(vector);
-              const nearest = nearestNote(existing.filter((entry) => entry.host === note.host), vector, this.embedder.dimension);
+              const nearest = nearestNote(existing.filter((entry) => mergeCompatible(entry, note)), vector, this.embedder.dimension);
               mutations.push(nearest && nearest.score >= MERGE_SIMILARITY ? { note, mergeIntoId: nearest.note.id } : { note });
+              if (!nearest || nearest.score < MERGE_SIMILARITY) existing.push(note);
               continue;
             }
           } catch {
@@ -316,8 +333,9 @@ export class NavMemoryService {
           }
         }
         const normalized = normalizeSummary(note.summary);
-        const same = existing.find((entry) => entry.host === note.host && normalizeSummary(entry.summary) === normalized);
+        const same = existing.find((entry) => mergeCompatible(entry, note) && normalizeSummary(entry.summary) === normalized);
         mutations.push(same ? { note, mergeIntoId: same.id } : { note });
+        if (!same) existing.push(note);
       }
       const { changed, created, merged } = await this.store.applyEtlBatch(session.workId, mutations, this.now());
       await this.store.completeWork(filename);
@@ -399,6 +417,10 @@ export class NavMemoryService {
           const left = group[i]!;
           const right = group[j]!;
           if (dropped.has(left.note.id) || dropped.has(right.note.id)) continue;
+          if (!mergeCompatible(left.note, right.note)) continue;
+          // Keep verified evidence attached to its original id. Semantic
+          // consolidation must not discard verdicts or double-count sessions.
+          if (left.note.feedback || right.note.feedback) continue;
           // Two seeds are never collapsed: a seed may be a merge target, never
           // a deleted source.
           if (left.note.source?.seed && right.note.source?.seed) continue;
@@ -464,7 +486,42 @@ export class NavMemoryService {
       pruned: meta.pruned,
       droppedEvents: meta.droppedEvents + this.droppedEvents,
       ollama: this.embedder.status(),
+      feedback: {
+        confirmed: notes.reduce((n, note) => n + (note.feedback?.confirmed ?? 0), 0),
+        contradicted: notes.reduce((n, note) => n + (note.feedback?.contradicted ?? 0), 0),
+        obsolete: notes.reduce((n, note) => n + (note.feedback?.obsolete ?? 0), 0),
+        suspectNotes: notes.filter(note => note.feedback?.status === "suspect").length,
+        obsoleteNotes: notes.filter(note => note.feedback?.status === "obsolete").length,
+      },
+      eligibility: {
+        verifiedNotes: notes.filter(note => note.feedback?.history.some(r => verifiedForPage(note, note.host, r.evidence.pageKey))).length,
+        candidateNotes: notes.filter(note => !note.feedback?.history.some(r => verifiedForPage(note, note.host, r.evidence.pageKey))).length,
+      },
     };
+  }
+
+  private async feedback(ctx: NavServiceContext, raw: unknown): Promise<NavMemoryFeedbackResult> {
+    if (!raw || typeof raw !== "object") throw new NavServiceError(-32602, "feedback params must be an object");
+    const p = raw as NavMemoryFeedbackParams;
+    if (typeof p.id !== "string" || !/^[0-9a-f]{64}$/.test(p.id) || !NAV_FEEDBACK_OUTCOMES.includes(p.outcome)) {
+      throw new NavServiceError(-32602, "provide a note id and a valid outcome");
+    }
+    const evidence = sanitizeEvidence(p.evidence);
+    if (!evidence || (evidence.check === "path" && matchesPathGlob(evidence.path, evidence.target) !== evidence.observed)) {
+      throw new NavServiceError(-32602, "feedback requires a verified structural assertion");
+    }
+    const note = this.store.allNotes().find(item => item.id === p.id);
+    if (!note) throw new NavServiceError(-32602, "navigation note no longer exists");
+    if (note.host !== evidence.host || (note.pathGlob && !matchesPathGlob(evidence.path, note.pathGlob)) ||
+        (note.pageKey && note.pageKey !== evidence.pageKey)) {
+      throw new NavServiceError(-32602, "feedback page does not match the note's exact host and path scope");
+    }
+    return this.store.applyFeedback(p.id, {
+      session: createHash("sha256").update(ctx.connId).digest("hex"),
+      at: this.now().toISOString(),
+      outcome: p.outcome,
+      evidence,
+    });
   }
 
   private async forget(raw: unknown): Promise<unknown> {
@@ -501,6 +558,7 @@ function validateEvent(raw: unknown, now: number): NavEventRecord | null {
   const event: NavEventRecord = { ts, tool: p.tool, ok: p.ok };
   if (host) event.host = host;
   if (path) event.path = path;
+  if (typeof p.pageKey === "string" && /^[0-9a-f]{64}$/.test(p.pageKey)) event.pageKey = p.pageKey;
   if (p.navigated === true) event.navigated = true;
   if (typeof p.errorCode === "string" && /^[A-Z_]{2,32}$/.test(p.errorCode)) event.errorCode = p.errorCode;
   for (const key of ["locator", "relatedLocator"] as const) {
@@ -527,6 +585,8 @@ function toSummary(note: NavNote): NavNoteSummary {
     summary: note.summary,
     confidence: note.confidence,
     reinforced: note.reinforced,
+    success: note.success,
+    feedbackStatus: note.feedback?.status,
   };
 }
 
@@ -564,26 +624,41 @@ function mergeNotes(target: NavNote, source: NavNote): NavNote {
 
 function toNote(item: DistilledNote, session: NavSessionLog, now: Date): NavNote | null {
   if (!NAV_NOTE_KINDS.includes(item.kind) || typeof item.summary !== "string" || typeof item.detail !== "string") return null;
-  const summary = truncateUtf8(redactText(item.summary).replace(/\s+/g, " ").trim(), NAV_NOTE_CAPS.summary);
-  const detail = truncateUtf8(redactText(item.detail).replace(/\s+/g, " ").trim(), NAV_NOTE_CAPS.detail);
+  let summary = truncateUtf8(redactText(item.summary).replace(/\s+/g, " ").trim(), NAV_NOTE_CAPS.summary);
+  let detail = truncateUtf8(redactText(item.detail).replace(/\s+/g, " ").trim(), NAV_NOTE_CAPS.detail);
   if (!summary || !detail || containsPromptLikeText(summary) || containsPromptLikeText(detail)) return null;
   const example = typeof item.example === "string" ? truncateUtf8(redactText(item.example).replace(/\s+/g, " ").trim(), NAV_NOTE_CAPS.example) : null;
   if (example && containsPromptLikeText(example)) return null;
   if (typeof item.pathGlob === "string" && !validPathGlob(item.pathGlob)) return null;
-  const pathGlob = typeof item.pathGlob === "string" ? item.pathGlob : null;
+  const pageKeys = [...new Set(session.events.map(e => e.pageKey))];
+  if (pageKeys.length !== 1) return null;
+  const pageKey = pageKeys[0];
+  const pathGlob = pageKey ? session.events[0]?.path ?? null : typeof item.pathGlob === "string" ? item.pathGlob : null;
   if (!Array.isArray(item.tools) || item.tools.some((tool) => typeof tool !== "string" || !ALLOWED_TOOLS.has(tool))) return null;
   const tools = [...new Set(item.tools)].slice(0, 12);
+  let observation: NavNote["observation"];
+  if (pageKey && item.kind === "selector") {
+    const locator = typeof item.locator === "string" ? sanitizeLocator(item.locator) : null;
+    const event = locator && session.events.find(e => e.locator === locator && tools.includes(e.tool) && e.ok === (item.success === true));
+    if (!event || !locator) return null;
+    observation = { tool: event.tool, locator };
+    summary = `${event.tool} ${item.success ? "accepted" : "failed for"} locator ${locator}.`;
+    if (Buffer.byteLength(summary, "utf8") > NAV_NOTE_CAPS.summary) return null;
+    detail = "Observed on this exact page. RPC outcome alone does not establish the intended UI result; use a relevant live state check to promote this candidate.";
+  }
   const confidence = Math.min(0.7, Math.max(0, Number.isFinite(item.confidence) ? item.confidence : 0));
   const timestamp = now.toISOString();
   return {
-    id: noteId(session.host, item.kind, summary),
+    id: noteId(session.host, item.kind, summary, { pathGlob, success: item.success === true, pageKey }),
     host: session.host,
     registrableDomain: session.registrableDomain,
     pathGlob,
+    ...(pageKey ? { pageKey } : {}),
+    ...(observation ? { observation } : {}),
     kind: item.kind,
     summary,
     detail,
-    example: example || null,
+    example: observation ? observation.locator : example || null,
     tools,
     success: item.success === true,
     confidence,

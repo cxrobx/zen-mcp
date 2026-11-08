@@ -16,10 +16,14 @@ import {
   NAV_NOTE_KINDS,
   type NavEventRecord,
   type NavNote,
+  type NavFeedbackRecord,
+  type NavMemoryFeedbackResult,
   type NavSessionLog,
 } from "@zen-mcp/shared";
 import { normalizeHost, registrableDomain, sanitizeLocator, truncateUtf8, validPathGlob } from "@zen-mcp/shared/nav-redact";
 import { log } from "../log.js";
+import { MAX_FEEDBACK_HISTORY, normalizeFeedback } from "./feedback.js";
+import { mergeCompatible } from "./merge.js";
 
 const STORE_SCHEMA_VERSION = 1;
 const MAX_PROCESSED_IDS = 2_048;
@@ -93,6 +97,8 @@ function isNote(value: unknown): value is NavNote {
     typeof n.detail === "string" && n.detail.length > 0 && Buffer.byteLength(n.detail) <= NAV_NOTE_CAPS.detail &&
     (n.example === null || (typeof n.example === "string" && Buffer.byteLength(n.example) <= NAV_NOTE_CAPS.example)) &&
     (n.pathGlob === null || (typeof n.pathGlob === "string" && validPathGlob(n.pathGlob))) &&
+    (n.pageKey === undefined || (typeof n.pageKey === "string" && /^[0-9a-f]{64}$/.test(n.pageKey))) &&
+    (n.observation === undefined || (typeof n.observation?.tool === "string" && typeof n.observation?.locator === "string" && sanitizeLocator(n.observation.locator) === n.observation.locator)) &&
     Array.isArray(n.tools) && n.tools.every((tool) => typeof tool === "string") &&
     typeof n.success === "boolean" &&
     typeof n.confidence === "number" && n.confidence >= 0 && n.confidence <= 1 &&
@@ -150,6 +156,7 @@ function sanitizeStoredEvent(value: unknown): NavEventRecord | null {
   const event: NavEventRecord = { ts: raw.ts, tool: truncateUtf8(raw.tool, 60), ok: raw.ok };
   if (typeof raw.host === "string" && normalizeHost(raw.host) === raw.host) event.host = raw.host;
   if (typeof raw.path === "string" && raw.path.startsWith("/")) event.path = truncateUtf8(raw.path, 500);
+  if (typeof raw.pageKey === "string" && /^[0-9a-f]{64}$/.test(raw.pageKey)) event.pageKey = raw.pageKey;
   if (raw.navigated === true) event.navigated = true;
   if (typeof raw.errorCode === "string" && /^[A-Z_]{2,32}$/.test(raw.errorCode)) event.errorCode = raw.errorCode;
   for (const key of ["locator", "relatedLocator"] as const) {
@@ -198,7 +205,7 @@ export class JsonNavStore {
       if (parsed.schemaVersion !== STORE_SCHEMA_VERSION || !Array.isArray(parsed.notes)) {
         throw new Error("unsupported or malformed nav-memory store");
       }
-      this.notes = new Map(parsed.notes.filter(isNote).map((note) => [note.id, note]));
+      this.notes = new Map(parsed.notes.filter(isNote).map((note) => [note.id, { ...note, feedback: normalizeFeedback(note.feedback) }]));
       this.seedVersion = typeof parsed.seedVersion === "number" ? parsed.seedVersion : 0;
       this.meta = normalizedMeta(parsed.meta);
       await chmod(this.notesPath, 0o600);
@@ -299,29 +306,42 @@ export class JsonNavStore {
 
   async applyEtlBatch(workId: string, mutations: EtlMutation[], at = new Date()): Promise<EtlBatchResult> {
     if (this.meta.processedWorkIds.includes(workId)) return { changed: 0, created: 0, merged: 0 };
+    const planned = new Map(this.notes);
+    for (const mutation of mutations) {
+      const targetId = mutation.mergeIntoId ?? mutation.note.id;
+      const target = planned.get(targetId);
+      if (target && !mergeCompatible(target, mutation.note)) throw new Error("incompatible navigation notes cannot merge");
+      if (!target) planned.set(mutation.note.id, mutation.note);
+    }
     let created = 0;
     let merged = 0;
+    const touched = new Set<string>();
     for (const mutation of mutations) {
       const targetId = mutation.mergeIntoId ?? mutation.note.id;
       const existing = this.notes.get(targetId);
       if (existing) {
+        // Several paraphrases from one work file are one observation, not
+        // independent reinforcement. Idempotency also covers replayed work.
+        if (touched.has(targetId)) continue;
         merged += 1;
         const incoming = mutation.note;
+        const replaceDetail = !existing.feedback && incoming.confidence > existing.confidence;
         this.notes.set(targetId, {
           ...existing,
-          detail: incoming.confidence > existing.confidence ? incoming.detail : existing.detail,
-          example: incoming.confidence > existing.confidence ? incoming.example : existing.example,
+          detail: replaceDetail ? incoming.detail : existing.detail,
+          example: replaceDetail ? incoming.example : existing.example,
           tools: [...new Set([...existing.tools, ...incoming.tools])],
           success: existing.success || incoming.success,
           confidence: Math.max(existing.confidence, incoming.confidence),
           reinforced: existing.reinforced + 1,
           lastSeenAt: incoming.lastSeenAt,
-          embedding: existing.embedding ?? incoming.embedding,
+          embedding: replaceDetail && incoming.detail !== existing.detail ? null : existing.embedding,
         });
       } else {
         this.notes.set(incomingId(mutation), mutation.note);
         created += 1;
       }
+      touched.add(targetId);
     }
     this.meta.processedWorkIds = [...this.meta.processedWorkIds, workId].slice(-MAX_PROCESSED_IDS);
     this.meta.etlCreated += created;
@@ -329,6 +349,23 @@ export class JsonNavStore {
     this.meta.lastEtlAt = at.toISOString();
     await this.persist();
     return { changed: created + merged, created, merged };
+  }
+
+  async applyFeedback(id: string, record: NavFeedbackRecord): Promise<NavMemoryFeedbackResult> {
+    const note = this.notes.get(id);
+    if (!note) throw new Error("navigation note no longer exists");
+    const feedback = note.feedback ?? { confirmed: 0, contradicted: 0, obsolete: 0, status: "active" as const, history: [] };
+    const prior = feedback.history.find(item => item.session === record.session);
+    if (prior?.outcome === record.outcome && JSON.stringify(prior.evidence) === JSON.stringify(record.evidence)) return { id, recorded: false, feedback };
+    const next = { ...feedback, history: feedback.history.filter(item => item.session !== record.session) };
+    // A corrected verdict in one session replaces that session's vote.
+    if (prior) next[prior.outcome] = Math.max(0, next[prior.outcome] - 1);
+    next[record.outcome] += 1;
+    next.status = record.outcome === "confirmed" ? "active" : record.outcome === "contradicted" ? "suspect" : "obsolete";
+    next.history = [...next.history, record].slice(-MAX_FEEDBACK_HISTORY);
+    this.notes.set(id, { ...note, feedback: next, ...(record.outcome === "confirmed" ? { lastSeenAt: record.at } : {}) });
+    await this.persist();
+    return { id, recorded: true, feedback: next };
   }
 
   async saveSessionLogs(logs: NavSessionLog[]): Promise<void> {

@@ -27,6 +27,10 @@ process.stdin.on("data", (chunk) => { input += chunk; });
 process.stdin.on("end", () => {
   // A KNOWN NOTES entry for the fact we already learned means the run should
   // reinforce it by position rather than restate it as a new note.
+  const data = JSON.parse(input.split("DATA:\n")[1]);
+  if (!data.events.some(e => e.tool === "fill")) {
+    process.stdout.write(JSON.stringify({ structured_output: { notes: [] } })); return;
+  }
   const known = input.match(/^\s*(\d+)\.\s*\([a-z-]+\)\s[^\n]*fixture form/im);
   const note = known
     ? {

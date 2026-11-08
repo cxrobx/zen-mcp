@@ -13,6 +13,8 @@ import {
   sanitizeLocator,
 } from "@zen-mcp/shared/nav-redact";
 import type { DaemonClient } from "./daemon-client.js";
+import { randomBytes } from "node:crypto";
+import { pageFingerprint } from "./nav-identity.js";
 
 export const NAV_TOOL_META = Symbol("nav-tool-meta");
 
@@ -53,7 +55,9 @@ export function withNavMeta<T extends object>(response: T, meta: NavToolMeta): T
 
 export class NavContext {
   private pages: PageInfo[] = [];
-  private completedHosts = new Set<string>();
+  private completedPaths = new Map<string, { host: string; at: number }>();
+  private shownIds = new Set<string>();
+  private generation = 0;
   private inFlightQueries = new Map<string, Promise<NavMemoryQueryResult>>();
   private queued: NavEventRecord[] = [];
   private inFlight: NavEventRecord[] | null = null;
@@ -61,7 +65,10 @@ export class NavContext {
   constructor(
     private readonly daemon: DaemonClient,
     private readonly enabled: boolean,
+    private readonly identityKey: string = randomBytes(32).toString("hex"),
   ) {}
+
+  pageKey(url: string): string | null { return pageFingerprint(url, this.identityKey); }
 
   observePages(pages: PageInfo[]): void {
     this.pages = [...pages];
@@ -76,8 +83,14 @@ export class NavContext {
         const location = this.deriveLocation(name, args, response[NAV_TOOL_META]);
         if (!location) return response;
         this.capture(name, args, response, location);
-        const notes = await this.queryOnce(location.host, location.path);
-        if (notes && notes.notes.length > 0) this.inject(response, notes);
+        const generation = this.generation;
+        const notes = await this.queryOnce(location.host, location.path, location.pageKey);
+        if (generation === this.generation && notes && response.content?.[0]?.type === "text") {
+          if (notes.notes.length > 0) this.inject(response, notes);
+          const key = JSON.stringify([location.host, location.pageKey]);
+          this.completedPaths.set(key, { host: location.host, at: Date.now() });
+          if (this.completedPaths.size > 256) this.completedPaths.delete(this.completedPaths.keys().next().value!);
+        }
       } catch {
         // Navigation memory is advisory and must never alter a tool outcome.
       }
@@ -89,7 +102,7 @@ export class NavContext {
     name: string,
     args: Record<string, unknown>,
     meta?: NavToolMeta,
-  ): { host: string; path: string } | null {
+  ): { host: string; path: string; pageKey: string } | null {
     const candidates: string[] = [];
     if (meta?.url) candidates.push(meta.url);
     if (typeof args.url === "string") candidates.push(args.url);
@@ -117,27 +130,32 @@ export class NavContext {
       // The first normalizable candidate IS the tool's location; when it is a
       // dev host, that means no capture and no injection — not "try the next
       // candidate", which would attribute the event to the wrong page.
-      return isDevHost(normalized.host) ? null : { host: normalized.host, path: normalized.path };
+      return isDevHost(normalized.host) ? null : { host: normalized.host, path: normalized.path, pageKey: this.pageKey(candidate)! };
     }
     return null;
   }
 
-  private queryOnce(host: string, path: string): Promise<NavMemoryQueryResult | null> {
-    if (this.completedHosts.has(host)) return Promise.resolve(null);
-    const existing = this.inFlightQueries.get(host);
-    if (existing) return this.withTimeout(host, existing);
+  private queryOnce(host: string, path: string, pageKey: string): Promise<NavMemoryQueryResult | null> {
+    const key = JSON.stringify([host, pageKey]);
+    const completed = this.completedPaths.get(key);
+    if (completed && Date.now() - completed.at < 5 * 60_000) return Promise.resolve(null);
+    const existing = this.inFlightQueries.get(key);
+    if (existing) return this.withTimeout(existing);
     const call = this.daemon.call<NavMemoryQueryResult>(Methods.NavMemoryQuery, {
       host,
       path,
+      pageKey,
       limit: 8,
       full: false,
+      excludeIds: [...this.shownIds],
     });
-    call.catch(() => undefined);
-    this.inFlightQueries.set(host, call);
-    return this.withTimeout(host, call);
+    this.inFlightQueries.set(key, call);
+    const release = () => { if (this.inFlightQueries.get(key) === call) this.inFlightQueries.delete(key); };
+    call.then(release, release);
+    return this.withTimeout(call);
   }
 
-  private async withTimeout(host: string, call: Promise<NavMemoryQueryResult>): Promise<NavMemoryQueryResult | null> {
+  private async withTimeout(call: Promise<NavMemoryQueryResult>): Promise<NavMemoryQueryResult | null> {
     let timer: NodeJS.Timeout | undefined;
     try {
       const result = await Promise.race([
@@ -146,14 +164,19 @@ export class NavContext {
           timer = setTimeout(() => reject(new Error("nav-memory query timeout")), 300);
         }),
       ]);
-      this.completedHosts.add(host);
       return result;
     } catch {
       return null;
     } finally {
       if (timer) clearTimeout(timer);
-      if (this.inFlightQueries.get(host) === call) this.inFlightQueries.delete(host);
     }
+  }
+
+  invalidate(host: string, id?: string): void {
+    this.generation++;
+    for (const [key, value] of this.completedPaths) if (value.host === host) this.completedPaths.delete(key);
+    for (const key of this.inFlightQueries.keys()) if (JSON.parse(key)[0] === host) this.inFlightQueries.delete(key);
+    if (id) this.shownIds.delete(id);
   }
 
   private inject(response: ToolLikeResponse, result: NavMemoryQueryResult): void {
@@ -163,13 +186,15 @@ export class NavContext {
     const lines = [header];
     let shown = 0;
     for (const projected of result.notes) {
-      const note = projected as { kind?: unknown; summary?: unknown };
-      if (typeof note.kind !== "string" || typeof note.summary !== "string") continue;
+      const note = projected as { id?: unknown; kind?: unknown; summary?: unknown; feedbackStatus?: unknown };
+      if (typeof note.id !== "string" || this.shownIds.has(note.id) || typeof note.kind !== "string" || typeof note.summary !== "string") continue;
       const summary = redactText(note.summary).replace(/\s+/g, " ").trim();
-      const line = `• [${note.kind}] ${summary}`;
+      const line = `• [${note.kind}${note.feedbackStatus === "suspect" ? "; suspect" : ""}] ${summary} (id: ${note.id})`;
       const candidate = [...lines, line].join("\n");
       if (Buffer.byteLength(candidate, "utf8") > 1_536) break;
       lines.push(line);
+      this.shownIds.add(note.id);
+      if (this.shownIds.size > 500) this.shownIds.delete(this.shownIds.values().next().value!);
       shown += 1;
     }
     const omitted = Math.max(0, result.total - shown);
@@ -177,14 +202,14 @@ export class NavContext {
       const footer = `(${omitted} more — call get_domain_playbook for the full set)`;
       if (Buffer.byteLength([...lines, footer].join("\n"), "utf8") <= 1_536) lines.push(footer);
     }
-    first.text = `${lines.join("\n")}\n\n${first.text}`;
+    if (shown > 0) first.text = `${lines.join("\n")}\n\n${first.text}`;
   }
 
   private capture(
     tool: string,
     args: Record<string, unknown>,
     response: ToolLikeResponse,
-    location: { host: string; path: string },
+    location: { host: string; path: string; pageKey: string },
   ): void {
     const meta = response[NAV_TOOL_META];
     const event: NavEventRecord = {
@@ -192,6 +217,7 @@ export class NavContext {
       tool,
       host: location.host,
       path: location.path,
+      pageKey: location.pageKey,
       ok: response.isError !== true,
     };
     if (meta?.navigated || tool === "navigate_page" || tool.startsWith("new_page")) event.navigated = true;

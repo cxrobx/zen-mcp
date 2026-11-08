@@ -12,7 +12,7 @@ Per-tab tools take `tabId` (durable) or `pageIdx` (positional) — see [Addressi
 | **DOM actions** | `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `fill_form_by_uid`, `drag_by_uid_to_uid`, `click`, `hover`, `fill`, `fill_secret`, `type`, `drag`, `select_option`, `press_key`, `scroll` |
 | **Cookies/storage** | `get_cookies`, `set_cookies`, `clear_cookies`, `get_storage`, `set_storage`, `clear_storage` |
 | **Diagnostics** | `get_firefox_info` |
-| **Navigation memory** | `get_domain_playbook`, `nav_memory_stats`, `nav_memory_forget` |
+| **Navigation memory** | `get_domain_playbook`, `nav_memory_feedback`, `nav_memory_stats`, `nav_memory_forget` |
 
 ## Addressing tabs: `tabId` vs `pageIdx`
 
@@ -95,3 +95,9 @@ Fidelity gaps to know:
 Focus behavior: automation is non-disruptive by default. `new_page` / `new_page_in_container` open tabs in the **background** (pass `active: true` to foreground), `navigate_page` and the DOM tools act on a tab by id without activating it, and `screenshot_page` captures without focus. The only tools that surface a tab to the foreground are `select_page` and an explicit `active: true` on `new_page` / `open_url` — and when the tab lives in another Zen workspace, those are also the only tools that make Zen switch workspaces. This means an agent can drive one container while you browse in another without your focus being stolen.
 
 **Spaces.** A tab opened in a container is filed into the Zen space bound to that container, in the background, so it never lands in the space you happen to be in and your view doesn't move. Zen's Space Routing rules can't see a tab's container, so zen-mcp opens each container tab at a marker (`about:blank#zen-space=<container id>;`) that one rule per container sends to the right space, then loads the real URL. Install the rules with `npm run spaces:markers -- --write` and restart Zen once (it reads them at startup); `npm run check:spaces` verifies them and `scripts/probe-space-marker.mjs` proves it live. Your own browsing is untouched, since nothing you do produces a marker. Keep `zen.workspaces.force-container-workspace` off: it also files tabs by container, but switches your view to every tab it files.
+
+## Navigation-memory outcomes
+
+`get_domain_playbook` includes candidate, verified, suspect and obsolete observations. Automatic hints require a confirmed state outcome on the same keyed page identity; selector presence and successful action RPCs alone do not qualify.
+
+To verify a fill result, use `nav_memory_feedback({ tabId: 101, id: "<note id>", outcome: "confirmed", check: { selector: "#field", state: "value", value: "expected result" } })`. The value is compared transiently and only a boolean is saved. Other supported states are `visible`, `enabled`, `checked` (with `present: true/false`) and `count` (with `count: N`). To retire a selector, report `obsolete` with `{ selector: "#old", present: false }`. The caller must choose a check relevant to the advice; code verifies the live assertion and scope. See [navigation memory](nav-memory.md) for privacy, promotion and evaluation details.

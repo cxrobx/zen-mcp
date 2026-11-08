@@ -18,6 +18,8 @@
     "build:extension": "npm run build -w extension",
     "typecheck": "tsc -b shared daemon server extension",
     "test:nav-memory": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/nav-memory.test.mjs",
+    "eval:nav-memory": "npm run build:shared && npm run build:daemon && npm run build:server && node scripts/nav-memory-eval.mjs",
+    "eval:browser": "npm run build:shared && npm run build:daemon && npm run build:server && node scripts/browser-task-benchmark.mjs",
     "test:tab-target": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/tab-target.test.mjs",
     "test:container-routes": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/container-routes.test.mjs",
     "test:fill-secret": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/fill-secret.test.mjs",
@@ -34,7 +36,8 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "esbuild": "^0.24.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "zod-to-json-schema": "^3.25.2"
   },
   "engines": {
     "node": ">=20"

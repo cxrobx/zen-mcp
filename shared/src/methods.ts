@@ -39,6 +39,7 @@ export const Methods = {
   NavMemoryRecordEvents: "navMemory.recordEvents",
   NavMemoryStats: "navMemory.stats",
   NavMemoryForget: "navMemory.forget",
+  NavMemoryFeedback: "navMemory.feedback",
   NavMemoryEtlNow: "navMemory.etlNow",
 } as const;
 

@@ -11,6 +11,8 @@
 // Needs: the host in ~/.config/zen-mcp/jev.json, TYPESAFE_API_KEY in the Keychain (sk), and
 // the container logged in to the site. Sends that page's control labels to api.typesafe.ai.
 // Nav memory is off (probe traffic must not be distilled into the real store).
+// --provider luna uses OPENAI_API_KEY and the independent luna.json host permissions;
+// --vision off|auto|always selects whether permitted screenshots accompany decisions.
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -29,6 +31,8 @@ const url = arg("url", "https://search.google.com/search-console?resource_id=sc-
 const goal = arg("goal", "open the Pages indexing report");
 const maxSteps = Number.parseInt(arg("max-steps", "5"), 10);
 const expect = arg("expect", "");
+const provider = arg("provider", "");
+const vision = arg("vision", "");
 const quiet = process.argv.includes("--quiet");
 const keep = process.argv.includes("--keep");
 
@@ -113,7 +117,7 @@ try {
     if (listing.text.split("\n").length > 25) console.log("...");
   }
 
-  const result = await mcp.tool("navigate_goal", { tabId, goal, maxSteps, ...(expect ? { expect } : {}) }, 180_000);
+  const result = await mcp.tool("navigate_goal", { tabId, goal, maxSteps, ...(expect ? { expect } : {}), ...(provider ? { provider } : {}), ...(vision ? { vision } : {}) }, 180_000);
   console.log(`\n--- navigate_goal (${result.ms}ms wall) ---\n${result.text}`);
 } finally {
   if (tabId !== null && !keep) {

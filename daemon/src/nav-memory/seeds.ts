@@ -62,8 +62,11 @@ const SEEDS: Array<{
   },
 ];
 
-export function noteId(host: string, kind: string, summary: string): string {
-  return createHash("sha256").update(`${host}\0${kind}\0${summary.trim()}`).digest("hex");
+export function noteId(host: string, kind: string, summary: string, scope?: { pathGlob: string | null; success: boolean; pageKey?: string }): string {
+  const key = `${host}\0${kind}\0${summary.trim()}`;
+  // Keep seed ids stable, including existing forget tombstones. Newly learned
+  // facts also identify their scope and polarity so distinct facts cannot clash.
+  return createHash("sha256").update(scope ? `${key}\0${scope.pathGlob ?? ""}\0${scope.success}${scope.pageKey ? `\0${scope.pageKey}` : ""}` : key).digest("hex");
 }
 
 export async function applySeeds(store: JsonNavStore, now = new Date()): Promise<void> {

@@ -3,6 +3,7 @@ import { WebSocket } from "ws";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 
 const url = process.env.ZEN_MCP_URL ?? "ws://127.0.0.1:8766";
 const tokenPath =
@@ -133,6 +134,19 @@ ws.on("message", (data) => {
           truncated: false,
         },
       }));
+      return;
+    }
+    if (msg.method === "dom.evaluate") {
+      const page = FIXTURE_PAGES.find(item => item.tabId === msg.params?.tabId);
+      try {
+        const result = runInNewContext(`(function(){${msg.params.code}})()`, {
+          location: { href: page?.url },
+          document: { readyState: "complete", querySelector(selector) { return selector === 'input[name="email"]' ? { disabled: false, value: 'fixture' } : null; } },
+        });
+        ws.send(JSON.stringify({ type: "response", id: msg.id, result: { result } }));
+      } catch {
+        ws.send(JSON.stringify({ type: "response", id: msg.id, error: { code: -32602, message: "fixture assertion failed" } }));
+      }
       return;
     }
     ws.send(

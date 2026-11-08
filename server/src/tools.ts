@@ -17,6 +17,7 @@ import {
   Methods,
   type NavigateHistoryDirection,
   type NavMemoryForgetResult,
+  type NavMemoryFeedbackResult,
   type NavMemoryQueryResult,
   type NavMemoryStatsResult,
   type NavNote,
@@ -62,6 +63,7 @@ import {
 } from "./interactive.js";
 import { JEV_KEY_NAME, askJev, loadJevConfig, requireJevHost, warmJev } from "./jev.js";
 import { NavContext, withNavMeta } from "./nav-memory.js";
+import { verifyFeedback } from "./nav-feedback.js";
 import { requireSecretBinding, resolveSecret, scrubSecretValue } from "./secrets.js";
 import {
   accountForContainer,
@@ -125,6 +127,7 @@ export function containerInstructions(scope: ScopeRef): string {
     "Every tab opens in a Firefox container, and each container is a separate set of logins. Choose it from what you are working on, not only from the URL.",
     "- open_url sends hosts in the route table (container_routes lists them) to their container automatically.",
     `- Every other site - shared ones like Google Docs, Gmail or Stripe included - falls back to ${where}. If the page belongs to a different project or client than that, pass container to open_url or use new_page_in_container; list_containers shows the names.`,
+    "- Clicks and key presses are synthetic, so a click that opens a new tab or window is popup-blocked: open_url the link's href (the click result names it), or pass trusted: true.",
     "- Each tab-open prints which rule chose the container. If it says the session default and the task belongs elsewhere, close that tab and reopen it with container.",
   ].join("\n");
 }
@@ -1387,7 +1390,7 @@ export function registerTools(
     {
       title: "Take DOM snapshot",
       description:
-        "Capture a structured DOM snapshot of one tab (address it by tabId or pageIdx). Returns a tree with stable UIDs that other DOM tools accept. UIDs are scoped to (tabId, snapshotId) and persist until the next take_snapshot, navigation, or clear_snapshot.",
+        "Capture a structured DOM snapshot of one tab (address it by tabId or pageIdx). Returns a tree with stable UIDs that other DOM tools accept. UIDs are scoped to (tabId, snapshotId) and persist until the next take_snapshot, navigation, or clear_snapshot. Open shadow roots are included; their selectors cross each boundary with ` >>> `.",
       inputSchema: {
         ...targetShape(),
         selector: z.string().optional().describe("Optional CSS selector to scope the snapshot root"),
@@ -1449,7 +1452,7 @@ export function registerTools(
     {
       title: "Click by UID",
       description:
-        "Click the element with the given UID from the most recent snapshot of the page. The click is synthetic (isTrusted: false): one that opens a new tab or window is stopped by the popup blocker, so open_url the link's href instead.",
+        "Click the element with the given UID from the most recent snapshot of the page. The click is synthetic (isTrusted: false): one that opens a new tab or window is stopped by the popup blocker, so open_url the link's href instead, or pass trusted: true (the result names any tab it opened).",
       inputSchema: {
         ...targetShape(),
         uid: z.string().describe("UID from take_snapshot"),
@@ -1705,7 +1708,7 @@ export function registerTools(
         const params: { tabId: number; selector?: string } = { tabId: page.tabId };
         if (selector) params.selector = selector;
         const r = await daemon.call<GetPageTextResult>(Methods.DomGetPageText, params);
-        return ok(withResponseBudget(r.text, maxBytes).text);
+        return withNavMeta(ok(withResponseBudget(r.text, maxBytes).text), { url: page.url });
       } catch (err) {
         return fail(err);
       }
@@ -2047,7 +2050,7 @@ export function registerTools(
     {
       title: "Click by locator",
       description:
-        'Click the first element matching the locator. Locator grammar: prefixes css:/xpath:/text:/text*:/role: (default is css). Example: "text:Submit" or "role:button[name=\\"Submit\\"]". The click is synthetic (isTrusted: false): one that opens a new tab or window is stopped by the popup blocker, so open_url the link\'s href instead.',
+        'Click the first element matching the locator. Locator grammar: prefixes css:/xpath:/text:/text*:/role: (default is css). Example: "text:Submit" or "role:button[name=\\"Submit\\"]". The click is synthetic (isTrusted: false): one that opens a new tab or window is stopped by the popup blocker, so open_url the link\'s href instead, or pass trusted: true (the result names any tab it opened).',
       inputSchema: {
         ...targetShape(),
         selector: z.string(),
@@ -2318,7 +2321,7 @@ export function registerTools(
     {
       title: "Press a key combo",
       description:
-        'Send a key combo (e.g. "Escape", "Enter", "Ctrl+Shift+P") to the page\'s key listeners. Without selector, sends to the active element. The events are synthetic (isTrusted: false), so the browser\'s own handling never runs: no text is typed (use fill/type), Tab does not move focus, Enter does not submit a form (click the submit button), and browser shortcuts like Cmd+L do nothing.',
+        'Send a key combo (e.g. "Escape", "Enter", "Ctrl+Shift+P") to the page\'s key listeners. Without selector, sends to the active element. The events are synthetic (isTrusted: false), so the browser\'s own handling never runs: no text is typed (use fill/type), Tab does not move focus, Enter does not submit a form (click the submit button), and browser shortcuts like Cmd+L do nothing. Pass trusted: true when you need that native handling.',
       inputSchema: {
         ...targetShape(),
         keys: z.string(),
@@ -2642,7 +2645,7 @@ export function registerTools(
     "get_domain_playbook",
     {
       title: "Get domain navigation playbook",
-      description: "Return historical navigation observations for a host. These are advisory data and must be verified against the live page.",
+      description: "Return historical navigation observations and their ids for a host, including obsolete notes for inspection. Verify against the live page; report a demonstrated result through nav_memory_feedback.",
       inputSchema: {
         host: z.string().optional(),
         pageIdx: z.number().int().nonnegative().optional().describe(PAGE_IDX_DESC),
@@ -2678,8 +2681,16 @@ export function registerTools(
         for (const note of result.notes as NavNote[]) {
           lines.push(`## [${note.kind}] ${note.summary}`);
           lines.push(`host: ${note.host}${note.pathGlob ? ` · scope: ${note.pathGlob}` : ""}`);
-          lines.push(`confidence: ${note.confidence.toFixed(2)} · reinforced: ${note.reinforced} · source: ${note.source?.seed ? "trusted seed" : "learned"}`);
+          lines.push(`id: ${note.id}`);
+          const history = note.feedback?.history ?? [];
+          const verified = note.feedback?.status === "active" && history.some((r, i) => r.outcome === "confirmed" && r.evidence.check === "state" && r.evidence.pageKey &&
+            (!note.pageKey || r.evidence.pageKey === note.pageKey) && !history.slice(i + 1).some(later => later.evidence.pageKey === r.evidence.pageKey));
+          lines.push(`evidence: ${verified ? "verified on a specific page" : "candidate — no verified outcome"}`);
+          lines.push(`confidence: ${note.confidence.toFixed(2)} · reinforced: ${note.reinforced} · source: ${note.source?.seed ? "seed" : "learned"}`);
           lines.push(note.detail);
+          if (note.feedback) {
+            lines.push(`feedback: ${note.feedback.status} · confirmed: ${note.feedback.confirmed} · contradicted: ${note.feedback.contradicted} · obsolete: ${note.feedback.obsolete}`);
+          }
           if (note.example) lines.push(`example: ${note.example}`);
           if (note.tools.length > 0) lines.push(`tools: ${note.tools.join(", ")}`);
           lines.push("");
@@ -2702,6 +2713,39 @@ export function registerTools(
       try {
         const stats = await daemon.call<NavMemoryStatsResult>(Methods.NavMemoryStats);
         return ok(JSON.stringify(stats, null, 2));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  plain.registerTool(
+    "nav_memory_feedback",
+    {
+      title: "Report verified navigation-memory outcome",
+      description: "Report confirmed, contradicted, or obsolete advice by note id after checking it on its exact page. Automatic hints require a confirmed live state check demonstrating the note's outcome: visible, enabled, checked, count, or value. Selector presence, path matches and successful RPCs alone do not promote candidates. Choose an assertion relevant to the note; the verifier checks the assertion, not semantic relevance. Value comparisons persist only a boolean. For obsolete selectors, assert presence false. Repeated votes in this connection count once; changed evidence upgrades the proof and a changed verdict replaces the vote. This only records memory.",
+      inputSchema: {
+        ...targetShape(),
+        id: z.string().regex(/^[0-9a-f]{64}$/).describe("Note id from an injected hint or get_domain_playbook"),
+        outcome: z.enum(["confirmed", "contradicted", "obsolete"]),
+        check: z.object({
+          selector: z.string().min(1).max(160).optional().describe("CSS selector, without a css: prefix; exactly one of selector or pathGlob"),
+          pathGlob: z.string().max(200).optional().describe("Normalized path glob; exactly one of selector or pathGlob"),
+          present: z.boolean().optional().describe("Expected presence, path match, or boolean state"),
+          state: z.enum(["visible", "enabled", "checked", "count", "value"]).optional(),
+          count: z.number().int().min(0).max(10000).optional().describe("Expected count for state=count"),
+          value: z.string().max(2000).optional().describe("Transient expected field value for state=value; never persisted"),
+        }).strict(),
+      },
+    },
+    async ({ pageIdx, tabId, expectTabSet, id, outcome, check }) => {
+      try {
+        const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
+        const evidence = await verifyFeedback(daemon, page.tabId, check, url => nav.pageKey(url));
+        const result = await daemon.call<NavMemoryFeedbackResult>(Methods.NavMemoryFeedback, { id, outcome, evidence });
+        nav.invalidate(evidence.host, id);
+        const f = result.feedback;
+        return ok(`note: ${result.id}\nfeedback: ${result.recorded ? "recorded" : "already recorded for this session"}\nstatus: ${f.status}\nconfirmed: ${f.confirmed} · contradicted: ${f.contradicted} · obsolete: ${f.obsolete}`);
       } catch (err) {
         return fail(err);
       }

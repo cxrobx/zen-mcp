@@ -70,7 +70,7 @@ async function main(): Promise<void> {
     { name: SERVER_NAME, version: SERVER_VERSION },
     { instructions: containerInstructions(scope) },
   );
-  const nav = new NavContext(daemon, process.env.ZEN_MCP_NAV_MEMORY !== "0");
+  const nav = new NavContext(daemon, process.env.ZEN_MCP_NAV_MEMORY !== "0", token);
   registerTools(server, daemon, scope, {
     name: SERVER_NAME,
     version: SERVER_VERSION,

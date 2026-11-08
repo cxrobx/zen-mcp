@@ -231,4 +231,25 @@ The test asked for 3× faster than the Claude-driven path on three recurring non
 
 If it is shelved, `interactive_elements`, `wait_for stable`, the title-change settle and `scripts/probe-transition.mjs` stand on their own; record why here and leave the code.
 
+### Keep or kill — 2026-10-16 review (T187)
+
+**Decision required by T187: shelve and delete `navigate_goal` for zero real uses. Removal is pending; the tool is still registered.** T187 explicitly requires deletion, superseding the older instruction above to leave shelved code in place.
+
+The preceding review run measured retained nav-memory work files at 2026-10-16T22:01:18Z, counting events after 2026-09-17T01:13:00Z. These are its recorded measurements, reused here rather than re-counted during the continuation:
+
+| Measure | Post-launch (4,427 events, 236 files) | Baseline (2,244 events) |
+|---|---:|---:|
+| `navigate_goal` | 0 | — |
+| `interactive_elements` | 58 (1.31%) | — |
+| `wait_for` condition `stable` | 74 (1.67%), all successful | — |
+| `evaluate_script` | 1,733 (39.15%) | 696 (31.02%) |
+| `take_snapshot` | 472 (10.66%) | 31 (1.38%) |
+| `wait_for` TIMEOUT | 24 (0.54%) | 26 (1.16%) |
+
+Neither script nor snapshot share dropped; `interactive_elements` remains for Chris to decide. Keep `wait_for stable` regardless. Retention limits apply: `done` holds at most 300 files / 30 days, so these are retained events rather than a complete historical census. Probes disable navigation memory and are correctly absent.
+
+The continuation found a new integration conflict in the existing uncommitted tree: `navigate_goal` now supports Luna as well as Jev (`server/src/tools.ts`), the shared loop has Luna screenshot support (`server/src/goal.ts`), and `server/src/luna.ts` imports the financial-host guard and response types from `server/src/jev.ts`. `scripts/luna.test.mjs`, the modified goal suites, `test:goal`, and `docs/luna.md` exercise or describe that integration. Deleting exactly the files requested by T187 would break the Luna module; trimming the tests would also discard existing Luna coverage. No removal has been performed, and this note does not certify a shelved runtime.
+
+Next: reconcile the existing Luna work with the whole-tool deletion requirement before changing the shared implementation. A full deletion must explicitly resolve Luna's remaining imports, tests, benchmark, and documentation; retaining Luna instead changes T187's requested outcome. The continuation preserved that work. Home-directory changes and Git metadata writes are outside its granted writable paths, so config cleanup, global instructions/memory updates, and a commit also remain for an appropriately authorized session. Do not restart the daemon as though removal has shipped.
+
 **To re-measure** (a new host class, or a loop change that might move the ratio), use the A/B protocol from the baseline section: a subagent given the same goal in the same words on the same pre-settled tab, `navigate_goal` forbidden, timing its own browser work with `python3 -c 'import time;print(int(time.time()*1000))'` (BSD `date` has no `%3N`).

@@ -64,7 +64,9 @@ export interface GoalDeps {
    * usually ignores it, and that is the hand-back the caller cannot otherwise diagnose.
    */
   click(uid: string): Promise<{ navigated: boolean; occludedBy?: string }>;
-  ask(state: unknown, questions: Record<string, JevQuestion>): Promise<JevResponse>;
+  ask(state: unknown, questions: Record<string, JevQuestion>, image?: string): Promise<JevResponse>;
+  /** Only supplied after separate screenshot permission checks. */
+  screenshot?(page: GoalPage): Promise<string>;
   /** Throws when this host's data may not be sent. Re-checked every step: a click can leave the host. */
   allowHost(host: string | null): void;
 }
@@ -79,6 +81,8 @@ export interface GoalOptions {
    * word alone, and the trace says so.
    */
   expect?: string;
+  providerName?: string;
+  vision?: "off" | "auto" | "always";
 }
 
 export interface RecentAction {
@@ -115,6 +119,9 @@ export interface GoalStep {
   requests: number;
   jevMs: number;
   tokens: number;
+  observationMs?: number;
+  screenshotMs?: number;
+  screenshot?: boolean;
   action: string;
 }
 
@@ -125,6 +132,7 @@ export interface GoalAlternative {
 }
 
 export interface GoalResult {
+  providerName?: string;
   outcome: "done" | "handback";
   reason: string;
   /** How "done" was established: by code against `expect`, or by Jev's judgment alone. */
@@ -226,6 +234,7 @@ function stepQuestions(candidates: InteractiveElement[]): Record<string, JevQues
 
 export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<GoalResult> {
   const started = Date.now();
+  const judge = options.providerName ?? "Jev";
   const steps: GoalStep[] = [];
   const recentActions: RecentAction[] = [];
   let arrivedVia: { control: string; destination: string | null } | null = null;
@@ -244,6 +253,7 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
     alternatives: GoalAlternative[] = [],
     verified: GoalResult["verified"] = null,
   ): GoalResult => ({
+    providerName: judge,
     outcome,
     reason,
     verified,
@@ -286,7 +296,9 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
         return finish("handback", `the last click left the allowlist: ${(err as Error).message}`);
       }
 
+      const observed = Date.now();
       const collection = await deps.elements(page.url);
+      const observationMs = Date.now() - observed;
       const allowed = collection.elements.filter(eligible);
       const candidates = allowed.slice(0, INTERACTIVE_MAX_LIMIT);
       const byUid = new Map(candidates.map((el) => [el.uid, el]));
@@ -304,6 +316,7 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
         requests: 0,
         jevMs: 0,
         tokens: 0,
+        observationMs,
         action: "",
       };
       steps.push(step);
@@ -322,7 +335,20 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
         // A copy: the state handed to ask must not change under it when the next click lands.
         recent_actions: recentActions.slice(-RECENT_ACTIONS_MAX).map((a) => ({ ...a })),
       };
-      const reply = await deps.ask(state, stepQuestions(candidates));
+      let image: string | undefined;
+      if (deps.screenshot && (options.vision === "always" || (options.vision === "auto" && candidates.some((el) => el.duplicate)))) {
+        const captureStarted = Date.now();
+        image = await deps.screenshot(page);
+        step.screenshotMs = Date.now() - captureStarted;
+        step.screenshot = true;
+        const current = await deps.page();
+        deps.allowHost(normalizeUrl(current.url)?.host ?? null);
+        if (current.url !== page.url) {
+          step.action = "stopped: page moved during screenshot";
+          return finish("handback", "the page moved during observation - nothing was sent or clicked");
+        }
+      }
+      const reply = await deps.ask(state, stepQuestions(candidates), image);
       charge(step, reply);
       step.done = noul(reply, "done");
       step.authWall = noul(reply, "auth_wall");
@@ -332,17 +358,17 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
           const needle = options.expect.toLowerCase();
           const met = page.url.toLowerCase().includes(needle) || (collection.text ?? "").toLowerCase().includes(needle);
           if (!met) {
-            step.action = "stopped: Jev said done, expectation not met";
+            step.action = `stopped: ${judge} said done, expectation not met`;
             return finish(
               "handback",
-              `Jev judged the goal reached (done=${fmt(step.done)}) but ${JSON.stringify(options.expect)} is not in the URL or visible text`,
+              `${judge} judged the goal reached (done=${fmt(step.done)}) but ${JSON.stringify(options.expect)} is not in the URL or visible text`,
             );
           }
           step.action = "goal reached, verified";
           return finish("done", `goal reached: ${JSON.stringify(options.expect)} is on the page (done=${fmt(step.done)})`, [], "expect");
         }
         step.action = "goal reached";
-        return finish("done", `Jev judged the goal reached (done=${fmt(step.done)}) - Jev's judgment, not verified by code`, [], "jev");
+        return finish("done", `${judge} judged the goal reached (done=${fmt(step.done)}) - model judgment, not verified by code`, [], "jev");
       }
       if (step.authWall >= AUTH_WALL_THRESHOLD) {
         step.action = "stopped: sign-in page";
@@ -367,17 +393,17 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
         return finish("handback", `maxSteps (${options.maxSteps}) spent without the goal judged reached`, alternatives);
       }
       if (next.choice === NONE_OPTION) {
-        step.action = "stopped: Jev picked none";
+        step.action = `stopped: ${judge} picked none`;
         return finish(
           "handback",
-          `Jev found no control that moves toward the goal (none=${fmt(next.probabilities[NONE_OPTION] ?? 0)})`,
+          `${judge} found no control that moves toward the goal (none=${fmt(next.probabilities[NONE_OPTION] ?? 0)})`,
           alternatives,
         );
       }
       const picked = byUid.get(next.choice);
       if (!picked) {
         step.action = "stopped: unknown pick";
-        return finish("handback", `Jev picked "${next.choice}", which was not offered`, alternatives);
+        return finish("handback", `${judge} picked "${next.choice}", which was not offered`, alternatives);
       }
       const probability = next.probabilities[next.choice] ?? 0;
       step.pick = {
@@ -426,6 +452,7 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
             },
           },
         },
+        image,
       );
       charge(step, guard);
       step.mutates = noul(guard, "mutates");
@@ -477,17 +504,22 @@ export async function runGoal(deps: GoalDeps, options: GoalOptions): Promise<Goa
 }
 
 export function formatGoalResult(result: GoalResult): string {
+  const judge = result.providerName ?? "Jev";
   const requests = result.steps.reduce((sum, s) => sum + s.requests, 0);
   const jevMs = result.steps.reduce((sum, s) => sum + s.jevMs, 0);
   const tokens = result.steps.reduce((sum, s) => sum + s.tokens, 0);
   const settleMs = result.steps.reduce((sum, s) => sum + s.settleMs, 0);
+  const observations = result.steps.reduce((sum, s) => sum + (s.observationMs ?? 0), 0);
+  const captures = result.steps.filter((s) => s.screenshot).length;
+  const captureMs = result.steps.reduce((sum, s) => sum + (s.screenshotMs ?? 0), 0);
   const lines = [
     `navigate_goal ${result.outcome === "done" ? (result.verified === "expect" ? "DONE (verified)" : "DONE (unverified)") : "HANDED BACK"}: ${result.reason}`,
-    `${result.clicks} click${result.clicks === 1 ? "" : "s"}, ${(result.totalMs / 1000).toFixed(1)}s total (Jev ${jevMs}ms over ${requests} request${requests === 1 ? "" : "s"}, ${tokens.toLocaleString("en-US")} tokens; waiting on the page ${settleMs}ms) - now at ${result.finalPath}`,
+    `${result.clicks} click${result.clicks === 1 ? "" : "s"}, ${(result.totalMs / 1000).toFixed(1)}s total (${judge} ${jevMs}ms over ${requests} request${requests === 1 ? "" : "s"}, ${tokens.toLocaleString("en-US")} tokens; waiting on the page ${settleMs}ms) - now at ${result.finalPath}`,
+    `observations ${observations}ms; ${captures} screenshot${captures === 1 ? "" : "s"} ${captureMs}ms (included in total, separate from API time)`,
   ];
   for (const s of result.steps) {
     lines.push(
-      `step ${s.n} ${s.path}${s.settled ? "" : " (page never settled)"} - waited ${s.settleMs}ms${s.settleDetail ? ` (${s.settleDetail})` : ""} - offered ${s.offered} of ${s.found} controls${s.withheld ? ` (${s.withheld} withheld: fields, toggles, off-host links, action words)` : ""} - Jev ${s.jevMs}ms, ${s.tokens.toLocaleString("en-US")} tok`,
+      `step ${s.n} ${s.path}${s.settled ? "" : " (page never settled)"} - waited ${s.settleMs}ms${s.settleDetail ? ` (${s.settleDetail})` : ""} - offered ${s.offered} of ${s.found} controls${s.withheld ? ` (${s.withheld} withheld: fields, toggles, off-host links, action words)` : ""} - ${judge} ${s.jevMs}ms, ${s.tokens.toLocaleString("en-US")} tok${s.screenshot ? `, screenshot ${s.screenshotMs}ms` : ""}`,
     );
     let detail = `  done=${fmt(s.done)} auth_wall=${fmt(s.authWall)}`;
     if (s.pick) {

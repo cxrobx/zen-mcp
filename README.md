@@ -85,7 +85,7 @@ The current surface is **39 tools** (36 browser tools plus 3 local navigation-me
 | **DOM actions** | `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `fill_form_by_uid`, `drag_by_uid_to_uid`, `click`, `hover`, `fill`, `fill_secret`, `type`, `drag`, `select_option`, `press_key`, `scroll` |
 | **Cookies/storage** | `get_cookies`, `set_cookies`, `clear_cookies`, `get_storage`, `set_storage`, `clear_storage` |
 | **Diagnostics** | `get_firefox_info` |
-| **Navigation memory** | `get_domain_playbook`, `nav_memory_stats`, `nav_memory_forget` |
+| **Navigation memory** | `get_domain_playbook`, `nav_memory_feedback`, `nav_memory_stats`, `nav_memory_forget` |
 
 - **Container routing.** A host → container table, plus per-directory defaults, decides which cookie jar a URL opens in, and `open_url` reuses the tab already open there. See [docs/container-routing.md](docs/container-routing.md).
 - **Non-disruptive by default.** Tabs open in the background and tools act on a tab by id without focusing it, so an agent can drive one container while you browse in another.
@@ -120,3 +120,5 @@ Input is synthetic (`isTrusted: false`), so popups, clipboard, file pickers and 
 ## License
 
 MIT OR Apache-2.0
+
+Navigation-memory automatic hints now require a live state/value proof for the same keyed page identity. Existing notes and seeds stay available in `get_domain_playbook` as candidates. See [the evidence gate and frozen browser evaluation](docs/nav-memory.md).

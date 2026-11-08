@@ -21,6 +21,9 @@ export interface RankContext {
   registrableDomain: string | null;
   path?: string;
   includeOutOfScope?: boolean;
+  includeObsolete?: boolean;
+  requireOutcome?: boolean;
+  pageKey?: string;
   now?: number;
 }
 
@@ -31,12 +34,18 @@ export function scoreNote(note: NavNote, ctx: RankContext): number {
   const reinforcement = 1 + Math.min(2, Math.log2(Math.max(1, note.reinforced)));
   const hostFactor = note.host === ctx.host ? 1 : 0.35;
   const pathFactor = note.pathGlob && ctx.path && matchesPathGlob(ctx.path, note.pathGlob) ? 1.25 : 1;
-  return note.confidence * recency * reinforcement * hostFactor * pathFactor * (KIND_WEIGHT[note.kind] ?? 1);
+  const feedback = note.feedback;
+  const reliability = feedback ? (feedback.confirmed + 1) / (feedback.confirmed + feedback.contradicted + feedback.obsolete + 1) : 1;
+  const statusFactor = feedback?.status === "obsolete" ? 0 : feedback?.status === "suspect" ? 0.25 : 1;
+  return note.confidence * reliability * statusFactor * recency * reinforcement * hostFactor * pathFactor * (KIND_WEIGHT[note.kind] ?? 1);
 }
 
 export function rankNotes(notes: NavNote[], ctx: RankContext, limit: number): NavNote[] {
   return notes
     .filter((note) => {
+      if (!ctx.includeObsolete && note.feedback?.status === "obsolete") return false;
+      if (ctx.requireOutcome && !verifiedForPage(note, ctx.host, ctx.pageKey)) return false;
+      if (!ctx.includeOutOfScope && note.pageKey && note.pageKey !== ctx.pageKey) return false;
       const related =
         note.host === ctx.host ||
         (ctx.registrableDomain !== null && note.registrableDomain === ctx.registrableDomain);
@@ -55,4 +64,11 @@ export function rankNotes(notes: NavNote[], ctx: RankContext, limit: number): Na
       return seen || a.id.localeCompare(b.id);
     })
     .slice(0, limit);
+}
+
+export function verifiedForPage(note: NavNote, host: string, pageKey?: string): boolean {
+  if (!pageKey || note.host !== host || note.feedback?.status !== "active" ||
+      (note.pageKey && note.pageKey !== pageKey)) return false;
+  const latest = [...note.feedback.history].reverse().find(r => r.evidence.pageKey === pageKey);
+  return latest?.outcome === "confirmed" && latest.evidence.check === "state";
 }

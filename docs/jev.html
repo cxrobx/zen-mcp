@@ -524,7 +524,7 @@ body:not(:has(.lvl-radio:checked)) .eli14 { display: block; }
 <div class="wrap">
 
   <header class="doc-header">
-    <p class="eyebrow">September 19, 2026</p>
+    <p class="eyebrow">September 19, 2026 · Updated October 27, 2026</p>
     <h1>Jev in zen-mcp</h1>
     <p class="subtitle"></p>
   </header>
@@ -587,7 +587,27 @@ loop reworked 2026-09-18 after comparing it with browser-use's
 re-checked against that repo 2026-09-19, which found two of the "taken"
 rows only half-wired (§ <em>Re-checked, 2026-09-19</em>). In use since
 2026-09-18 under a written tripwire at the bottom (§ <em>In use, with a
-tripwire</em>).</p>
+tripwire</em>). <strong>Unregistered 2026-10-16</strong> — see the box
+below.</p>
+<div class="callout warn"><span class="label">Updated 2026-10-27 — neither tool is registered</span>
+<p><strong><code>navigate_goal</code> and <code>interactive_elements</code>
+were unregistered on 2026-10-16</strong> (T187 keep-or-kill, zen-mcp
+<code>b0fcf44</code>). <code>navigate_goal</code> had 0 real uses in its
+30-day review, and <code>evaluate_script</code> / <code>take_snapshot</code>
+usage rose rather than fell after <code>interactive_elements</code>
+shipped. <code>wait_for</code> <code>"stable"</code> is kept. The code
+(<code>server/src/goal.ts</code>, <code>jev.ts</code>,
+<code>interactive.ts</code>) and its unit tests stay, so re-registering is
+restoring the <code>server.registerTool</code> block from git history.</p>
+<p>Read everything below as the record of the build, not a how-to: there
+is no tool to call. The <em>How to use it</em> list and the tally table
+in the last section are retired.</p>
+<p><strong>Model drift:</strong> <code>JEV_MODEL</code> is
+<code>jev-latest</code>, which moved from Jev 1.13 to <strong>Jev 1.14 on
+2026-10-14</strong>. Every measurement here was taken on 1.13.</p>
+<p><em>This box was added to the HTML by hand ahead of a re-render;
+<code>docs/jev.md</code> carries the same banner.</em></p>
+</div>
 <p><strong>Scope: this is one build, not the Jev decision doc.</strong>
 Whether Jev fits a problem at all — the five kill-filters, every
 candidate already surveyed, the tripwires, and the trained-classifier
@@ -611,6 +631,11 @@ note is where the travelling is recorded.</p>
 <p>TypeSafe's System One model. You send <strong>state</strong> (text or
 JSON) and named <strong>questions</strong>, and each comes back as a
 typed answer with probabilities:</p>
+<p><em>Updated 2026-10-27:</em> images (PNG/JPEG) are now accepted as
+state on Jev 1.13 and 1.14, and a fourth primitive, <strong>Box</strong>,
+exists on 1.14. Both are experimental ("Dreamer-ready", not production)
+and need the <code>TypeSafe-Danger-Zone-Images: true</code> header. This
+build uses neither.</p>
 <table>
 <thead>
 <tr>
@@ -636,6 +661,12 @@ options)</td>
 <td><code>score</code></td>
 <td>a probability-weighted level on an ordered rubric</td>
 <td>a degree: "how urgent?"</td>
+</tr>
+<tr>
+<td><code>box</code> <em>(experimental, 1.14, images only)</em></td>
+<td>four edges of a bounding box, as fractions of the image</td>
+<td>where something is in an image (needs the danger-zone images
+header)</td>
 </tr>
 </tbody>
 </table>
@@ -1033,8 +1064,9 @@ this loop has no scroll, so dropping an off-screen control would make it
 permanently unreachable. What this does <em>not</em> fix is the ~1.3 s
 to build and ship a 2,026-node tree: that needs a controls-only RPC
 instead of the full snapshot, which is still unbuilt.</li>
-<li><strong>Pricing unchecked.</strong> Tokens are reported per run;
-cost per token isn't known yet.</li>
+<li><strong>Pricing.</strong> <em>Updated 2026-10-27:</em> $0.042 per
+million input tokens ($42/Btok); output tokens are free. Tokens are
+reported per run.</li>
 <li><strong>Read-only by construction.</strong> No typing, selecting,
 toggling or form flows. <strong>Declined explicitly on
 2026-09-19</strong>, after <code>jev-ultrafast</code>'s 11-action
@@ -1273,6 +1305,10 @@ only evidence there is. That is why <code>runGoal</code> returns
 second use case, not after.</li>
 </ul>
 <h2 id="in-use-with-a-tripwire">In use, with a tripwire</h2>
+<p><em>Updated 2026-10-27: superseded.</em> The tool was unregistered on
+2026-10-16 (T187) with the tally below still empty: 0 real uses in 30
+days. The 2026-09-18 decision is kept as the record of what was
+tried.</p>
 <p><strong>Decision, 2026-09-18 (Chris): <code>navigate_goal</code> is
 in use. The formal keep/kill test is retired.</strong></p>
 <p>The test asked for 3× faster than the Claude-driven path on three
