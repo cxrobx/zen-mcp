@@ -2,7 +2,7 @@
 
 **Unregistered 2026-10-16 (T187).** Neither tool is in the tool list any more: `navigate_goal` had 0 real uses in its 30-day review, and `evaluate_script` / `take_snapshot` usage rose rather than fell after `interactive_elements` shipped. The code (`server/src/goal.ts`, `jev.ts`, `interactive.ts`) and its unit tests stay; re-registering is restoring the `server.registerTool` block from git history.
 
-Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, `navigate_goal`); loop reworked 2026-09-18 after comparing it with browser-use's `jev-ultrafast` (§ *The loop, reworked*), and re-checked against that repo 2026-09-19, which found two of the "taken" rows only half-wired (§ *Re-checked, 2026-09-19*). In use since 2026-09-18 under a written tripwire at the bottom (§ *In use, with a tripwire*).
+Status: implemented 2026-09-16 (`interactive_elements`, `wait_for` `stable`, the former goal tool); loop reworked 2026-09-18 after comparing it with browser-use's `jev-ultrafast` (§ *The loop, reworked*), and re-checked against that repo 2026-09-19, which found two of the "taken" rows only half-wired (§ *Re-checked, 2026-09-19*). The subsequent usage review led to unregistration (§ *Keep or kill*).
 
 **Scope: this is one build, not the Jev decision doc.** Whether Jev fits a problem at
 all — the five kill-filters, every candidate already surveyed, the tripwires, and the
@@ -13,7 +13,7 @@ exploration is the wrong home for a portfolio-wide decision.
 
 *This `.md` is the source of truth. `docs/jev.html` — the copy in Onyx as *Jev in zen-mcp* —
 is a **generated reading guide**: edit the Markdown and re-render with
-`~/.claude/docs/html-design/from-md.sh docs/jev.md docs/jev.html "How navigate_goal was built"`.
+`~/.claude/docs/html-design/from-md.sh docs/jev.md docs/jev.html "How the former goal tool was built"`.
 Never edit the HTML directly.*
 
 What stays here is what this build learned: the division of labour, the containment
@@ -22,13 +22,14 @@ examples of rules that travel — the vault note is where the travelling is reco
 
 ## What Jev is
 
-TypeSafe's System One model. You send **state** (text or JSON) and named **questions**, and each comes back as a typed answer with probabilities:
+TypeSafe's System One model. Jev 1.14 shipped 2026-10-14, and `jev-latest` points to it. You send **state** (text or JSON) and named **questions**, and each comes back as a typed answer with probabilities. The request limit is 64k tokens, including at most 32k per question. Images and Box are experimental behind the `TypeSafe-Danger-Zone-Images` header:
 
 | Primitive | Returns | Use it for |
 |---|---|---|
 | `noul` | probability of yes | a condition: "is this a sign-in page?" |
 | `choice` | the top option + a probability per option + `confidence` | one of a set: "which control next?" (max **255** options) |
 | `score` | a probability-weighted level on an ordered rubric | a degree: "how urgent?" |
+| `box` | bounding-box coordinates | experimental image localization |
 
 It does not generate text or explain itself. Measured here: 130–400 ms per request, roughly 2–3k input tokens for a 40-option choice.
 
@@ -121,14 +122,14 @@ Upstream carries the same sentence in `NEXT_ACTION` and `TEXT_VALUE`.
 
 ### The Claude-driven baseline, measured (2026-09-18)
 
-The original keep/kill test compared against "the Claude-driven path", which until now was a proxy: nav-memory's 4.8 s median gap between steps. It is now measured directly. A general-purpose subagent was handed the **same goal in the same words**, on the **same pre-settled tab**, with the zen tools and `navigate_goal` forbidden, and bracketed its own browser work with millisecond timestamps. Three runs per site, same build on both sides.
+The original keep/kill test compared against "the Claude-driven path", which until now was a proxy: nav-memory's 4.8 s median gap between steps. It is now measured directly. A general-purpose subagent was handed the **same goal in the same words**, on the **same pre-settled tab**, with the zen tools and the former goal tool forbidden, and bracketed its own browser work with millisecond timestamps. Three runs per site, same build on both sides.
 
-| Goal | navigate_goal (median of 3) | Claude-driven (median of 3) | Ratio |
+| Goal | the former goal tool (median of 3) | Claude-driven (median of 3) | Ratio |
 |---|---|---|---|
 | Search Console, "open the Sitemaps report" | **4.8 s** (4.6 / 4.8 / 5.1) | **15.0 s** (9.4 / 15.0 / 15.4) | **3.1×** |
 | Wikipedia, "open the Talk page for this article" | **3.8 s** (3.4 / 3.8 / 4.0) | **21.6 s** (20.8 / 21.6 / 28.0) | **5.7×** |
 
-**The baseline is best-case, and deliberately so.** Every one of the six runs took the optimal route with **zero wrong turns in the browser** — typically `find_by_text` → `click_by_uid` → one confirming read, three calls. One run used `css:#ca-talk a` from prior knowledge of Wikipedia's DOM, a shortcut navigate_goal cannot take, and still took 20.8 s. The subagents were also handed an already-settled page, while navigate_goal's number includes its own ~0.55 s first settle. Both asymmetries favor the baseline, so the real ratios are wider.
+**The baseline is best-case, and deliberately so.** Every one of the six runs took the optimal route with **zero wrong turns in the browser** — typically `find_by_text` → `click_by_uid` → one confirming read, three calls. One run used `css:#ca-talk a` from prior knowledge of Wikipedia's DOM, a shortcut the former goal tool cannot take, and still took 20.8 s. The subagents were also handed an already-settled page, while the former goal tool's number includes its own ~0.55 s first settle. Both asymmetries favor the baseline, so the real ratios are wider.
 
 **Where the Claude time goes: round trips, not the browser.** No agent reported a slow browser call. The cost is ~4-5 s per model turn, and a correct run needs three or four. Two of the three Wikipedia runs additionally burned 2 turns each guessing tool argument names (`wait_for` needs `condition` + `urlPattern`, `evaluate_script` needs `code`); the third spent one `ToolSearch` instead and had none. That is a real recurring cost of driving a tool surface by model, and it is exactly the cost a code loop does not pay.
 
@@ -143,10 +144,10 @@ The original keep/kill test compared against "the Claude-driven path", which unt
 - **`stable` (the tool) is still a quiet window** and still fires on an SPA's old view. Use it after a click only when you know the count changes; otherwise wait for text or a selector.
 - **Top frame only** for `stable` and the fingerprint probe; the snapshot itself does reach iframes.
 - **The click feedback races a full page load**, so `navigated` is `false` for a real navigation on Wikipedia. The settle detects the path change itself and waits for the title anyway; don't rely on `navigated` alone. Since 2026-09-19 the settle also owns what Jev is told about it (rule 9), so `navigated` now decides only how long to wait, never what happened.
-- **An overlay does not steal our clicks, so occlusion is reported, not rejected** (extension 0.0.19). `pointerClick` dispatches its events **on the element**, not at coordinates, so unlike a CDP-driven real mouse click a cookie banner never swallows them — the control's handler runs. What still fails is the app: held in a modal state, it ignores the action, and the caller is told "clicked" while nothing happened. So the hit-test result is carried as `occludedBy` rather than used to refuse the click. `navigate_goal` stops on *covered **and** nothing moved* and names the overlay; plain `click`/`click_by_uid` behave exactly as before, with a note appended. Rejecting instead would have been the upstream behavior and the wrong port: it would break every legitimate click under a transparent layer for no gain, since the click was never going astray.
-- **A snapshot can come back empty because the walk threw, and that used to be invisible** (fixed 0.0.20). Verifying the reordering below on the Gödel article returned **0 controls on a page with 922**: one heading whose `id` contained a quote character made an interpolated `label[for="…"]` selector throw, and `inject.ts` swallowed it into an empty tree. `navigate_goal` on such a page hands back with "no eligible control", which reads exactly like a Jev limitation and is not one. `snapshotError` now says which it is. If a page ever reports no controls, believe the tool only if it does *not* carry that field.
+- **An overlay does not steal our clicks, so occlusion is reported, not rejected** (extension 0.0.19). `pointerClick` dispatches its events **on the element**, not at coordinates, so unlike a CDP-driven real mouse click a cookie banner never swallows them — the control's handler runs. What still fails is the app: held in a modal state, it ignores the action, and the caller is told "clicked" while nothing happened. So the hit-test result is carried as `occludedBy` rather than used to refuse the click. the former goal tool stops on *covered **and** nothing moved* and names the overlay; plain `click`/`click_by_uid` behave exactly as before, with a note appended. Rejecting instead would have been the upstream behavior and the wrong port: it would break every legitimate click under a transparent layer for no gain, since the click was never going astray.
+- **A snapshot can come back empty because the walk threw, and that used to be invisible** (fixed 0.0.20). Verifying the reordering below on the Gödel article returned **0 controls on a page with 922**: one heading whose `id` contained a quote character made an interpolated `label[for="…"]` selector throw, and `inject.ts` swallowed it into an empty tree. the former goal tool on such a page hands back with "no eligible control", which reads exactly like a Jev limitation and is not one. `snapshotError` now says which it is. If a page ever reports no controls, believe the tool only if it does *not* carry that field.
 - **Big pages are capped at 254, now on-screen first** (extension 0.0.19). The snapshot's own filter is style-based (`isRelevant` → `isVisible`: display/visibility/opacity, ancestors included), so all 2,026 controls on a Wikipedia article are "visible" and a cap taken in DOM order spent itself on nav chrome and the first paragraphs. Nodes now carry `computed.inViewport` and `collectInteractive` sorts on it, stably. **Ordering, not filtering — the deliberate divergence from jev-ultrafast**, which filters to the viewport because its model can `SCROLL_UP`/`SCROLL_DOWN`; this loop has no scroll, so dropping an off-screen control would make it permanently unreachable. What this does *not* fix is the ~1.3 s to build and ship a 2,026-node tree: that needs a controls-only RPC instead of the full snapshot, which is still unbuilt.
-- **Pricing unchecked.** Tokens are reported per run; cost per token isn't known yet.
+- **Pricing:** $0.042 per million input tokens.
 - **Read-only by construction.** No typing, selecting, toggling or form flows. **Declined explicitly on 2026-09-19**, after `jev-ultrafast`'s 11-action Flights run raised the question — the decision and its conditions are in the vault note's *Looks like a fit, isn't*. The short form: on a read a wrong judgment costs a hand-back, on a write it is a wrong state-changing click in a browser holding banking and client sessions, and building it means deleting `MUTATION_THRESHOLD` and the wrong-click tripwire that make the read version acceptable at all. The reframe worth keeping: **for reads speed is pure gain; for writes the slow path's visibility is the safety mechanism**, so driving `fill`/`click_by_uid` step by step is slower *because* each step is legible and approvable. Speed here would be paying to remove your own oversight.
 
 ## The loop, reworked (2026-09-18)
@@ -206,34 +207,11 @@ code, and claims rot*. What the re-check found:
 
 Two notes that read against the general Jev literature. For the vendor-level treatment — the interface, calibration vs. accuracy, the four-workflow eval, and pricing at $0.042 per million input tokens — see **"The model that won't talk"** (the decision-native-models guide, in Onyx under `Learnings/Anthropic/Anthropic Applied AI Architect`). This doc is what happened when those claims met a build.
 
-- **Here Jev *drives* the loop rather than sitting beside one.** The usual framing puts cheap typed judgments in five seats around a *generative* agent loop: completion check, tool gate, trace grade, loop detection, escalation. `navigate_goal` has no LLM in the loop at all — Jev is the controller and code is everything else. That is cheaper again, and it has a different failure mode: nothing in the loop can explain itself, so the run's own record is the only evidence there is. That is why `runGoal` returns `steps[]` and the probe prints it. Build the trace before the second use case, not after.
+- **Here Jev *drives* the loop rather than sitting beside one.** The usual framing puts cheap typed judgments in five seats around a *generative* agent loop: completion check, tool gate, trace grade, loop detection, escalation. the former goal tool has no LLM in the loop at all — Jev is the controller and code is everything else. That is cheaper again, and it has a different failure mode: nothing in the loop can explain itself, so the run's own record is the only evidence there is. That is why `runGoal` returns `steps[]` and the probe prints it. Build the trace before the second use case, not after.
 
-## In use, with a tripwire
+## Keep or kill — 2026-10-16 review (T187)
 
-**Decision, 2026-09-18 (Chris): `navigate_goal` is in use. The formal keep/kill test is retired.**
-
-The test asked for 3× faster than the Claude-driven path on three recurring non-financial reads with zero wrong clicks. Search Console passed at 3.1×, and the fast-site control at 5.7× (see *The Claude-driven baseline, measured*). The remaining two reads were not run, on purpose: the test existed to decide whether to invest, the investment is already spent, and the mechanism now predicts the answer (another slow console, another ~3×). Finishing it would be measurement for its own sake. The number that decides whether the tool earns its place is the **hand-back rate on goals nobody picked for measurability**, and only real use produces that.
-
-**How to use it**
-
-- **A fast path that sometimes declines, not a replacement for driving.** On an ambiguous page it hands back (about half the time at p≈0.55 on a 2,026-control article with lookalike links), where a Claude agent would reason through and finish. A hand-back leaves the tab where it stopped with working UIDs, so falling back to `click_by_uid` costs almost nothing.
-- **Pass `expect` whenever you can name what arrival looks like.** Without it the finish is Jev's judgment alone.
-- **The allowlist grows on demand, one host at a time, on first need** — the same policy as the container routing table, and for the same reason: a speculative entry is unexercised surface. Every allowlisted host's control labels leave the machine; that is the only real cost of using this, so it is the thing to be deliberate about. Financial hosts stay blocked in code regardless. `en.wikipedia.org` is listed as the fast-site A/B fixture (public link labels only), not as a workload.
-
-**The tripwire — either one shelves it**
-
-1. **Any wrong click: shelve immediately.** Not a ratio. A click on something that was not a step toward the goal, or on anything that changed state, is exactly what the eligibility filter, the action-word list and the mutation guard exist to prevent; one instance means they failed, and the tool runs in a browser holding client sessions.
-2. **More hand-backs than finishes across the first ten real uses: shelve as not worth reaching for.** Real uses, not probe runs. Tally them here:
-
-| # | Date | Host | Goal | Outcome | Note |
-|---|---|---|---|---|---|
-| | | | | | |
-
-If it is shelved, `interactive_elements`, `wait_for stable`, the title-change settle and `scripts/probe-transition.mjs` stand on their own; record why here and leave the code.
-
-### Keep or kill — 2026-10-16 review (T187)
-
-**Decision required by T187: shelve and delete `navigate_goal` for zero real uses. Removal is pending; the tool is still registered.** T187 explicitly requires deletion, superseding the older instruction above to leave shelved code in place.
+**Decision: unregister `navigate_goal` after zero real uses.** Commit `b0fcf44` removed its registration on 2026-10-16; the implementation and tests remain. The prior in-use decision and tripwire are superseded.
 
 The preceding review run measured retained nav-memory work files at 2026-10-16T22:01:18Z, counting events after 2026-09-17T01:13:00Z. These are its recorded measurements, reused here rather than re-counted during the continuation:
 
@@ -248,8 +226,4 @@ The preceding review run measured retained nav-memory work files at 2026-10-16T2
 
 Neither script nor snapshot share dropped; `interactive_elements` remains for Chris to decide. Keep `wait_for stable` regardless. Retention limits apply: `done` holds at most 300 files / 30 days, so these are retained events rather than a complete historical census. Probes disable navigation memory and are correctly absent.
 
-The continuation found a new integration conflict in the existing uncommitted tree: `navigate_goal` now supports Luna as well as Jev (`server/src/tools.ts`), the shared loop has Luna screenshot support (`server/src/goal.ts`), and `server/src/luna.ts` imports the financial-host guard and response types from `server/src/jev.ts`. `scripts/luna.test.mjs`, the modified goal suites, `test:goal`, and `docs/luna.md` exercise or describe that integration. Deleting exactly the files requested by T187 would break the Luna module; trimming the tests would also discard existing Luna coverage. No removal has been performed, and this note does not certify a shelved runtime.
-
-Next: reconcile the existing Luna work with the whole-tool deletion requirement before changing the shared implementation. A full deletion must explicitly resolve Luna's remaining imports, tests, benchmark, and documentation; retaining Luna instead changes T187's requested outcome. The continuation preserved that work. Home-directory changes and Git metadata writes are outside its granted writable paths, so config cleanup, global instructions/memory updates, and a commit also remain for an appropriately authorized session. Do not restart the daemon as though removal has shipped.
-
-**To re-measure** (a new host class, or a loop change that might move the ratio), use the A/B protocol from the baseline section: a subagent given the same goal in the same words on the same pre-settled tab, `navigate_goal` forbidden, timing its own browser work with `python3 -c 'import time;print(int(time.time()*1000))'` (BSD `date` has no `%3N`).
+**To re-measure** (a new host class, or a loop change that might move the ratio), use the A/B protocol from the baseline section: a subagent given the same goal in the same words on the same pre-settled tab, the former goal tool forbidden, timing its own browser work with `python3 -c 'import time;print(int(time.time()*1000))'` (BSD `date` has no `%3N`).
