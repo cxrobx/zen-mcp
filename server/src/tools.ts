@@ -1609,7 +1609,7 @@ export function registerTools(
     {
       title: "Evaluate script",
       description:
-        "Run JavaScript in the page's MAIN world. The provided string is the function body; return a JSON-serializable value with `return ...`. Cannot return DOM nodes or non-serializable objects.",
+        "Run JavaScript in the page's MAIN world. The provided string is the function body; return a JSON-serializable value with `return ...`. Cannot return DOM nodes or non-serializable objects. It runs SYNCHRONOUSLY (a CSP-safe ES5 interpreter): `await` and `async` are refused before anything runs, and a returned Promise is never awaited. To wait for the page, use wait_for, or call evaluate_script again.",
       inputSchema: {
         ...targetShape(),
         code: z.string().describe("Function body. Use `return` to send a value back."),
@@ -1622,6 +1622,13 @@ export function registerTools(
         if (cursor) {
           const next = continueCursor(cursor, maxBytes);
           return ok(next.text);
+        }
+        const asyncWord = findAsyncSyntax(code);
+        if (asyncWord) {
+          return fail(new Error(
+            `evaluate_script runs synchronously, so \`${asyncWord}\` can't work here (it would be a SyntaxError in the page). ` +
+              "Drop it and return a plain value. To wait for something, call wait_for first, or call evaluate_script again.",
+          ));
         }
         const page = await resolveTarget(daemon, { pageIdx, tabId, expectTabSet });
         const r = await daemon.call<EvaluateScriptResult>(Methods.DomEvaluate, {
@@ -2778,4 +2785,21 @@ export function registerTools(
       }
     },
   );
+}
+
+/**
+ * `await` / `async` in evaluate_script code, ignoring strings, template text and comments.
+ * The page-side evaluator is a synchronous ES5 interpreter (extension/src/evaluate/inject.ts),
+ * where both are a SyntaxError; refusing here gives the agent the fix instead of the parse error.
+ */
+export function findAsyncSyntax(code: string): string | null {
+  // One left-to-right pass, so a `//` inside a string ("https://…") is not taken for a comment.
+  const stripped = code.replace(
+    /\/\*[\s\S]*?\*\/|\/\/[^\n]*|(["'])(?:\\.|(?!\1)[^\\\n])*\1|`(?:\\.|[^\\`])*`/g,
+    (m) => (m.startsWith("/") ? " " : '""'),
+  );
+  if (/(?<![.\w$])await\b/.test(stripped)) return "await";
+  // `async` only as syntax: not `script.async`, not `{ async: true }`.
+  if (/(?<![.\w$])async\s*(?:function\b|\(|[\w$]+\s*=>)/.test(stripped)) return "async";
+  return null;
 }

@@ -1,5 +1,17 @@
 # Changelog
 
+## evaluate_script refuses `await` up front (2026-11-13, server only)
+
+- `evaluate_script` now refuses code that uses `await` or `async` syntax, before anything reaches
+  the page, and says what to do instead (return a plain value; wait with `wait_for` or a second
+  call). Before, the page's ES5 interpreter threw `'await' is only allowed within async
+  functions…`, which agents hit in about 65 of every 1,000 sessions (dream pass, Oct 9 – Nov 12).
+- The tool description says it runs synchronously, so an agent knows before its first call.
+- Real `await` support was tried and dropped: Babel's ES5 output for an async wrapper resolves to
+  `null` under eval5, and a timer-based wait runs into eval5's timeout. It would need a different
+  evaluator, i.e. a signed extension release.
+- Test: `npm run test:evaluate-async`.
+
 ## 0.0.26 — a uid acts on its own element (2026-10-24, T315)
 
 - Snapshot CSS selectors are unique per uid. A `[data-testid]` (or role/aria-label, or a
