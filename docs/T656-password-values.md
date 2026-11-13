@@ -24,3 +24,8 @@ AMO authenticated successfully and reported 0.0.26 as its highest signed version
 Release 0.0.27 is the password-value fix. Installation and live verification of
 that version are required before completing T656. Live probe results obtained
 before installation exercise the previous extension, not these changes.
+
+Installed Zen confirmed extension.version 0.0.27. The live password probe
+(`node scripts/probe-password-live.mjs`), probe-snapshot-ids.mjs and probe-redact.mjs
+all passed against that installed version on 2026-11-12. Fixture tabs were closed.
+The credential-redact suite passed all 15 cases. T656 is ready to close.
