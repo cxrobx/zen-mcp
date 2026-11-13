@@ -179,8 +179,11 @@ export function walkTree(
     const htmlEl = el as HTMLElement;
     const roleAttr = el.getAttribute('role');
     const nameAttr = getElementName(el);
-    const textAttr = getTextContent(el);
-    const valueAttr = getSerializableProperty(htmlEl, "value");
+    const textAttr = tag === "textarea" ? undefined : getTextContent(el);
+    // A password may already be type=text before our first inspection (eye toggle).
+    // Never serialize editable input values; type/history heuristics cannot prove safety.
+    const valueAttr = tag === "input" || tag === "textarea"
+      ? undefined : getSerializableProperty(htmlEl, "value");
     const hrefAttr = getSerializableProperty(htmlEl, "href");
     const srcAttr = getSerializableProperty(htmlEl, "src");
     const ariaAttr = getAriaAttributes(el);

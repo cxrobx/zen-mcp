@@ -113,15 +113,12 @@ try {
   check("take_snapshot does not error", !snap.isError, snap.text.slice(0, 200));
   check("take_snapshot returns a populated tree", uids > 0, `got ${uids} UIDs - a hostile id emptied the walk`);
 
-  const listing = await mcp.tool("interactive_elements", { tabId });
-  check("interactive_elements does not error", !listing.isError, listing.text.slice(0, 200));
-  // One input per hostile id, plus the plain link and button.
-  const expected = HOSTILE_IDS.length + 2;
-  const found = Number.parseInt(listing.text.match(/: (\d+) of (\d+)/)?.[2] ?? "-1", 10);
-  check(`all ${expected} controls are listed`, found >= expected, `found ${found}`);
-  check("the plain link survived the hostile ids", listing.text.includes("A plain link"), "missing");
-  check("the plain button survived the hostile ids", listing.text.includes("A plain button"), "missing");
-  if (failures) console.log(`\n--- listing ---\n${listing.text.slice(0, 900)}`);
+  // interactive_elements was retired; assert against the supported snapshot output.
+  check("the plain link survived", snap.text.includes("A plain link"), "missing");
+  check("the plain button survived", snap.text.includes("A plain button"), "missing");
+  for (let i = 0; i < HOSTILE_IDS.length; i++) {
+    check(`hostile input ${i} survived`, snap.text.includes(`Label ${i}`), "missing");
+  }
 } finally {
   if (tabId) { try { await mcp.tool("close_page", { tabId }); } catch {} }
   server.kill();

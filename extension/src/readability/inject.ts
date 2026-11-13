@@ -22,6 +22,7 @@ declare global {
 function runReadability(): ReadResult {
   try {
     const clone = document.cloneNode(true) as Document;
+    clone.querySelectorAll("input, textarea").forEach((el) => el.remove());
     const article = new Readability(clone, {}).parse();
     if (!article || !article.content) {
       return { ok: false, reason: "no_article" };

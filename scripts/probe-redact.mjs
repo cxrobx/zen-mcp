@@ -135,7 +135,7 @@ try {
   noLeak("take_snapshot", snap);
   check("take_snapshot still names the aria-label key by prefix + last 4", snap.text.includes("sk_test_…9x4Q"), "masked form missing");
   noLeak("find_by_text", await mcp.tool("find_by_text", { tabId, text: "sk_" }));
-  noLeak("interactive_elements", await mcp.tool("interactive_elements", { tabId }));
+  // interactive_elements is retired; take_snapshot above covers its source data.
   noLeak("get_page_text", await mcp.tool("get_page_text", { tabId }));
   noLeak("read_page", await mcp.tool("read_page", { tabId }));
   noLeak("evaluate_script", await mcp.tool("evaluate_script", { tabId, code: "return document.body.innerText" }));
