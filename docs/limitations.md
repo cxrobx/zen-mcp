@@ -47,6 +47,7 @@ What it costs, and why it is never the default:
 
 It refuses, clicking nothing, when:
 
+- **the screen is locked.** A locked Mac keeps the lock screen in front of every app, so Zen cannot be brought forward and no real event can reach it. The helper reads the session's lock state (`zen-mcp-input front` reports `locked`) and the tool refuses with that reason up front. Synthetic input still works while locked; for a control that needs a real click, unlock the Mac or run the step on another unlocked Mac's Zen. Before this check existed, a locked screen surfaced as "the browser window is not focused", which reads like a focus bug and is not one.
 - the element matches but nothing visible (0px or scrolled out). The first visible match is used, since Material keeps 0px copies of its options.
 - something else is painted at the point (`elementFromPoint`, through open shadow roots).
 - the element moved more than 2px between the prepare read and the final check.

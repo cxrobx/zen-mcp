@@ -31,7 +31,8 @@
     "daemon": "node daemon/dist/index.js",
     "server": "node server/dist/index.js",
     "extension:run": "npm run run -w extension",
-    "extension:sign": "npm run sign -w extension"
+    "extension:sign": "npm run sign -w extension",
+    "test:trusted-lock": "npm run build:shared && npm run build:server && node --test scripts/trusted-lock.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

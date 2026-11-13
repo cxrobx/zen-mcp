@@ -92,6 +92,20 @@ async function tabsOpenedAfter(daemon: DaemonClient, above: number): Promise<Pag
   return found;
 }
 
+/**
+ * A locked screen is not a focus problem, and must not read like one: under the lock no app
+ * can be brought forward, so every trusted attempt fails as "window not focused" and invites
+ * a hunt for a focus bug. Checked from the helper's `front` reply before anything moves.
+ */
+export function lockedRefusal(front: Record<string, unknown>, action: "click" | "key" = "click"): ZenToolError | null {
+  if (front.locked !== true) return null;
+  return new ZenToolError(
+    "BAD_PERMS",
+    `trusted ${action} refused: this Mac's screen is locked, so macOS keeps the lock screen in front of every app and no real ${action} can reach Zen. Nothing was ${action === "click" ? "clicked" : "pressed"}.`,
+    "Synthetic input (the same tool without trusted) still works while locked. For a control that needs a real click, someone has to unlock this Mac, or run the step on the other Mac's Zen if it is awake and unlocked (from the mini: zen-laptop, see ~/.claude/docs/zen-mcp.md). Tab ids differ between the Macs, so open the page there first.",
+  );
+}
+
 function refusal(where: string, r: TrustedPointResult, action: "click" | "key" = "click"): ZenToolError {
   const why =
     r.reason === "covered"
@@ -104,6 +118,8 @@ function refusal(where: string, r: TrustedPointResult, action: "click" | "key" =
             ? "the tab is not the active one"
             : r.reason === "window_not_focused"
               ? "the browser window is not focused"
+              : r.reason === "screen_locked"
+                ? "this Mac's screen is locked (unlock it, or use the other Mac's Zen)"
               : r.reason === "ambiguous"
                 ? `the uid's selector matches ${r.matches ?? "several"} elements, so the click could land on the wrong one (take a fresh snapshot)`
                 : (r.reason ?? "unknown");
@@ -120,6 +136,8 @@ export async function trustedClick(
   timeoutMs?: number,
 ): Promise<TrustedClickResult> {
   const before = await runHelper(["front"]);
+  const locked = lockedRefusal(before, "click");
+  if (locked) throw locked;
   const highestBefore = await highestTabId(daemon);
   const priorPid = typeof before.pid === "number" ? before.pid : 0;
   const restorePid = before.bundleId === ZEN_BUNDLE_ID ? 0 : priorPid;
@@ -201,6 +219,8 @@ export async function trustedKey(
   timeoutMs?: number,
 ): Promise<TrustedKeyResult> {
   const before = await runHelper(["front"]);
+  const locked = lockedRefusal(before, "key");
+  if (locked) throw locked;
   const restorePid = before.bundleId === ZEN_BUNDLE_ID ? 0 : typeof before.pid === "number" ? before.pid : 0;
   let page: TrustedPointResult = { ok: false };
   if (target) {

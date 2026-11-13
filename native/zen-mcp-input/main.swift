@@ -4,7 +4,8 @@
 // other zen-mcp input is synthetic; see docs/limitations.md § Trusted input.
 //
 //   zen-mcp-input front
-//       -> {"bundleId":..., "pid":...} of the frontmost app
+//       -> {"bundleId":..., "pid":..., "locked":bool} of the frontmost app; locked is the
+//          session's screen lock, under which no app can be brought in front of loginwindow
 //   zen-mcp-input click --x <css px> --y <css px> --dpr <devicePixelRatio>
 //                       --expect-bundle <bundle id> [--restore-pid <pid>]
 //   zen-mcp-input key --key <name> [--mods cmd,shift,alt,ctrl]
@@ -79,9 +80,19 @@ while i < argv.count {
 
 func frontmost() -> NSRunningApplication? { NSWorkspace.shared.frontmostApplication }
 
+// A locked screen puts loginwindow's shield over every app: activation does nothing, Zen's
+// windows are not on screen, and a posted event would land on the lock screen. Measured on
+// the Mac mini 2026-11-13: every trusted click was refused as "window not focused" while
+// CGSSessionScreenIsLocked was 1, which sent agents hunting for a focus bug.
+func screenLocked() -> Bool {
+    guard let s = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+    // The key is absent when unlocked, and a CFBoolean/NSNumber when locked.
+    return (s["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue ?? false
+}
+
 if command == "front" {
     let app = frontmost()
-    emit(["bundleId": app?.bundleIdentifier ?? "", "pid": Int(app?.processIdentifier ?? 0)])
+    emit(["bundleId": app?.bundleIdentifier ?? "", "pid": Int(app?.processIdentifier ?? 0), "locked": screenLocked()])
     exit(0)
 }
 
@@ -89,6 +100,8 @@ guard command == "click" || command == "key", let expect = args["expect-bundle"]
     FileHandle.standardError.write("unknown command, or --expect-bundle missing\n".data(using: .utf8)!)
     exit(2)
 }
+
+if screenLocked() { refuse("screen_locked") }
 
 if ProcessInfo.processInfo.environment["ZEN_MCP_INPUT_DISCLAIMED"] != "1" { respawnDisclaimed() }
 
