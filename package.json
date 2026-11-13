@@ -33,7 +33,8 @@
     "extension:run": "npm run run -w extension",
     "extension:sign": "npm run sign -w extension",
     "test:trusted-lock": "npm run build:shared && npm run build:server && node --test scripts/trusted-lock.test.mjs",
-    "test:evaluate-async": "npm run build:shared && npm run build:server && node --test scripts/evaluate-async.test.mjs"
+    "test:evaluate-async": "npm run build:shared && npm run build:server && node --test scripts/evaluate-async.test.mjs",
+    "test:batch": "npm run build:shared && npm run build:daemon && npm run build:server && node --test scripts/batch.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

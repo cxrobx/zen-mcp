@@ -1,5 +1,16 @@
 # Changelog
 
+## `batch`: several tools in one call (2026-11-13, server only)
+
+- New tool `batch` runs up to 25 of the server's tools in order and returns every step's
+  result together, so a known sequence (click Edit, pick two options, press Update, read the
+  page) is one agent turn instead of five. Each step goes through its tool's own schema and
+  handler, so validation, nav capture, redaction and the page line after a click are the same
+  as a direct call.
+- It stops at the first failing step and names the steps it skipped; `continueOnError` keeps
+  going. A batch-level `tabId` fills in for steps that name no tab. `batch` cannot nest.
+- Test: `npm run test:batch` (stub extension, no browser).
+
 ## evaluate_script refuses `await` up front (2026-11-13, server only)
 
 - `evaluate_script` now refuses code that uses `await` or `async` syntax, before anything reaches

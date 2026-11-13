@@ -731,15 +731,22 @@ export function registerTools(
   nav: NavContext,
 ): void {
   activeNav = nav;
+  // Every tool's final (nav-captured, redacted) handler, by name, so `batch` runs a step exactly
+  // as a direct call would: same validation, same nav capture, same redaction.
+  const registry = new Map<string, BatchEntry>();
   const server = {
     registerTool(name: string, config: unknown, handler: (...args: any[]) => any): unknown {
-      return (mcp.registerTool as any)(name, config, withRedaction(nav.wrap(name, handler)));
+      const wrapped = withRedaction(nav.wrap(name, handler));
+      registry.set(name, batchEntry(config, wrapped));
+      return (mcp.registerTool as any)(name, config, wrapped);
     },
   };
   // The nav-memory tools stay out of nav capture, but not out of redaction.
   const plain = {
     registerTool(name: string, config: unknown, handler: (...args: any[]) => any): unknown {
-      return (mcp.registerTool as any)(name, config, withRedaction(handler));
+      const wrapped = withRedaction(handler);
+      registry.set(name, batchEntry(config, wrapped));
+      return (mcp.registerTool as any)(name, config, wrapped);
     },
   };
 
@@ -2785,6 +2792,111 @@ export function registerTools(
       }
     },
   );
+
+  plain.registerTool(
+    "batch",
+    {
+      title: "Run several tools in one call",
+      description:
+        "Run up to 25 of this server's tools in order, in ONE call, and get every step's result back together. Use it whenever you can already name the next steps: click, fill, select, wait_for, then read the result. Each step is validated and run exactly as the direct tool call would be (same output, same page line after a click). Stops at the first failing step unless continueOnError is true; the failed step and the steps it skipped are named. tabId, when given here, is used by every step that takes a tab and names none.",
+      inputSchema: {
+        steps: z
+          .array(
+            z.object({
+              tool: z.string().describe("Tool name, e.g. click, fill, select_option, wait_for, get_page_text"),
+              args: z.record(z.string(), z.unknown()).optional().describe("That tool's arguments"),
+            }),
+          )
+          .min(1)
+          .max(BATCH_MAX_STEPS),
+        tabId: z.number().int().optional().describe("Default tabId for steps that take a tab and name none"),
+        continueOnError: z.boolean().optional().describe("Keep going after a failed step (default false: stop)"),
+      },
+    },
+    async (
+      { steps, tabId, continueOnError }: { steps: Array<{ tool: string; args?: Record<string, unknown> }>; tabId?: number; continueOnError?: boolean },
+      extra: unknown,
+    ) => runBatch(registry, steps, { tabId, continueOnError: continueOnError === true }, extra),
+  );
+}
+
+const BATCH_MAX_STEPS = 25;
+
+interface BatchEntry {
+  schema: z.ZodTypeAny;
+  takesTab: boolean;
+  handler: (...args: any[]) => Promise<any>;
+}
+
+function batchEntry(config: unknown, handler: (...args: any[]) => Promise<any>): BatchEntry {
+  const shape = ((config as { inputSchema?: Record<string, z.ZodTypeAny> })?.inputSchema ?? {}) as Record<string, z.ZodTypeAny>;
+  return { schema: z.object(shape), takesTab: "tabId" in shape, handler };
+}
+
+/** Exported for tests. Runs each step through the tool's own schema and handler, in order. */
+export async function runBatch(
+  registry: Map<string, BatchEntry>,
+  steps: Array<{ tool: string; args?: Record<string, unknown> }>,
+  opts: { tabId?: number; continueOnError: boolean },
+  extra: unknown,
+): Promise<ToolResponse> {
+  const content: ToolResponse["content"] = [];
+  const total = steps.length;
+  let failed = 0;
+  let ran = 0;
+  for (let i = 0; i < total; i++) {
+    const step = steps[i]!;
+    const label = `[${i + 1}/${total}] ${step.tool}`;
+    const entry = step.tool === "batch" ? undefined : registry.get(step.tool);
+    let result: ToolResponse;
+    if (!entry) {
+      result = fail(
+        new ZenToolError(
+          "BAD_INPUT",
+          step.tool === "batch" ? "batch cannot contain batch" : `unknown tool "${step.tool}"`,
+          step.tool === "batch" ? "Put the steps in one list." : "Use a tool name exactly as this server lists it.",
+        ),
+      );
+    } else {
+      const raw: Record<string, unknown> = { ...(step.args ?? {}) };
+      if (entry.takesTab && opts.tabId !== undefined && raw.tabId === undefined && raw.pageIdx === undefined) {
+        raw.tabId = opts.tabId;
+      }
+      const parsed = entry.schema.safeParse(raw);
+      if (!parsed.success) {
+        const issues = parsed.error.issues.map((x) => `${x.path.join(".") || "(args)"}: ${x.message}`).join("; ");
+        result = fail(new ZenToolError("BAD_INPUT", `invalid arguments for ${step.tool}: ${issues}`));
+      } else {
+        try {
+          result = (await entry.handler(parsed.data, extra)) as ToolResponse;
+        } catch (err) {
+          result = fail(err);
+        }
+      }
+    }
+    ran++;
+    const isError = result.isError === true;
+    if (isError) failed++;
+    let first = true;
+    for (const item of result.content ?? []) {
+      if (item.type === "text" && first) {
+        content.push({ type: "text", text: `${label}${isError ? " FAILED" : ""}: ${item.text}` });
+        first = false;
+      } else {
+        content.push(item);
+      }
+    }
+    if (first) content.push({ type: "text", text: `${label}${isError ? " FAILED" : ""}: (no output)` });
+    if (isError && !opts.continueOnError) {
+      const skipped = steps.slice(i + 1).map((s) => s.tool);
+      if (skipped.length) content.push({ type: "text", text: `stopped: ${skipped.length} step(s) not run (${skipped.join(", ")})` });
+      break;
+    }
+  }
+  const out: ToolResponse = { content };
+  // A batch is an error only when it stopped early or nothing succeeded, so the agent re-plans.
+  if (failed > 0 && (!opts.continueOnError || failed === ran)) out.isError = true;
+  return out;
 }
 
 /**
