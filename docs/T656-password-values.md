@@ -18,8 +18,9 @@ Regression: build then `node scripts/probe-password-values.mjs` runs the actual 
 in a disposable headless Chrome profile with fake prefilled/revealed passwords.
 The existing live probes were updated to stop calling retired interactive_elements.
 
-Release remains pending: this Mac has no ~/.config/zen-mcp/.env signing credentials,
-and secret has reports AMO_KEY/AMO_SECRET absent. No manifest version was guessed:
-query AMO, bump past its highest version, rebuild/sign, install and confirm in Zen,
-then rerun the password fixture and both live probes. Existing live probe results
-before installation exercise the currently installed extension, not these changes.
+Signing configuration was restored from the laptop to the mini on 2026-11-12,
+with mode 0600; it is machine-local configuration, outside this public repository.
+AMO authenticated successfully and reported 0.0.26 as its highest signed version.
+Release 0.0.27 is the password-value fix. Installation and live verification of
+that version are required before completing T656. Live probe results obtained
+before installation exercise the previous extension, not these changes.
