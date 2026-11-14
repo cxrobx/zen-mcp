@@ -15,6 +15,7 @@ import {
 import type { DaemonClient } from "./daemon-client.js";
 import { randomBytes } from "node:crypto";
 import { pageFingerprint } from "./nav-identity.js";
+import type { CarefulHosts } from "./careful-hosts.js";
 
 export const NAV_TOOL_META = Symbol("nav-tool-meta");
 
@@ -66,6 +67,7 @@ export class NavContext {
     private readonly daemon: DaemonClient,
     private readonly enabled: boolean,
     private readonly identityKey: string = randomBytes(32).toString("hex"),
+    private readonly careful: CarefulHosts | null = null,
   ) {}
 
   pageKey(url: string): string | null { return pageFingerprint(url, this.identityKey); }
@@ -77,25 +79,45 @@ export class NavContext {
   wrap(name: string, handler: ToolHandler): ToolHandler {
     return async (args, extra) => {
       const response = await handler(args, extra);
-      if (!this.enabled) return response;
-      try {
-        if (typeof args.cursor === "string" || NO_LOCATION_TOOLS.has(name)) return response;
-        const location = this.deriveLocation(name, args, response[NAV_TOOL_META]);
-        if (!location) return response;
-        this.capture(name, args, response, location);
-        const generation = this.generation;
-        const notes = await this.queryOnce(location.host, location.path, location.pageKey);
-        if (generation === this.generation && notes && response.content?.[0]?.type === "text") {
-          if (notes.notes.length > 0) this.inject(response, notes);
-          const key = JSON.stringify([location.host, location.pageKey]);
-          this.completedPaths.set(key, { host: location.host, at: Date.now() });
-          if (this.completedPaths.size > 256) this.completedPaths.delete(this.completedPaths.keys().next().value!);
-        }
-      } catch {
-        // Navigation memory is advisory and must never alter a tool outcome.
-      }
+      if (this.enabled) await this.applyNavMemory(name, args, response);
+      // After nav-memory, because both prepend: the careful-site rule must read first.
+      // Independent of ZEN_MCP_NAV_MEMORY — turning memory off must not drop the rule.
+      this.applyCareful(name, args, response);
       return response;
     };
+  }
+
+  private applyCareful(name: string, args: Record<string, unknown>, response: ToolLikeResponse): void {
+    if (!this.careful) return;
+    try {
+      if (NO_LOCATION_TOOLS.has(name)) return;
+      const location = this.deriveLocation(name, args, response[NAV_TOOL_META]);
+      if (!location) return;
+      const text = this.careful.notice(name, location.host);
+      const first = response.content?.[0];
+      if (text && first && first.type === "text" && typeof first.text === "string") first.text = `${text}\n\n${first.text}`;
+    } catch {
+      // Advisory, like nav-memory: never alter a tool outcome.
+    }
+  }
+
+  private async applyNavMemory(name: string, args: Record<string, unknown>, response: ToolLikeResponse): Promise<void> {
+    try {
+      if (typeof args.cursor === "string" || NO_LOCATION_TOOLS.has(name)) return;
+      const location = this.deriveLocation(name, args, response[NAV_TOOL_META]);
+      if (!location) return;
+      this.capture(name, args, response, location);
+      const generation = this.generation;
+      const notes = await this.queryOnce(location.host, location.path, location.pageKey);
+      if (generation === this.generation && notes && response.content?.[0]?.type === "text") {
+        if (notes.notes.length > 0) this.inject(response, notes);
+        const key = JSON.stringify([location.host, location.pageKey]);
+        this.completedPaths.set(key, { host: location.host, at: Date.now() });
+        if (this.completedPaths.size > 256) this.completedPaths.delete(this.completedPaths.keys().next().value!);
+      }
+    } catch {
+      // Navigation memory is advisory and must never alter a tool outcome.
+    }
   }
 
   private deriveLocation(

@@ -6,6 +6,7 @@ import { parseArgs } from "./cli.js";
 import { DaemonClient, RpcError } from "./daemon-client.js";
 import { type ScopeRef, applySessionDefault, containerInstructions, registerTools } from "./tools.js";
 import { NavContext } from "./nav-memory.js";
+import { CarefulHosts } from "./careful-hosts.js";
 import { loadRouteTable } from "./routes.js";
 
 const SERVER_NAME = "zen-ext-mcp";
@@ -70,7 +71,7 @@ async function main(): Promise<void> {
     { name: SERVER_NAME, version: SERVER_VERSION },
     { instructions: containerInstructions(scope) },
   );
-  const nav = new NavContext(daemon, process.env.ZEN_MCP_NAV_MEMORY !== "0", token);
+  const nav = new NavContext(daemon, process.env.ZEN_MCP_NAV_MEMORY !== "0", token, CarefulHosts.load((msg) => logStderr(msg)));
   registerTools(server, daemon, scope, {
     name: SERVER_NAME,
     version: SERVER_VERSION,
